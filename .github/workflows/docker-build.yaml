@@ -222,7 +222,7 @@ jobs:
 
       # MODE B: Generic Registry (Docker Hub, GHCR, etc.)
       - name: Login to Generic Registry
-        if: inputs.registry_type == 'generic'
+        if: inputs.registry_type == 'generic' && (inputs.push == true || secrets.registry_username != '')
         uses: docker/login-action@v3.0.0
         with:
           registry: ${{ inputs.registry_url }}

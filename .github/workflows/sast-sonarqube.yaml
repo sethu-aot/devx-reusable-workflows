@@ -139,11 +139,11 @@ jobs:
             echo "language=node" >> $GITHUB_OUTPUT
             echo "project_root=$ROOT_DIR" >> $GITHUB_OUTPUT
             echo "✅ Detected: Node.js project in $ROOT_DIR"
-          elif [[ -f "$SCAN_DIR/requirements.txt" ]] || [[ -f "$SCAN_DIR/setup.py" ]]; then
+          elif [[ -f "$SCAN_DIR/requirements.txt" ]] || [[ -f "$SCAN_DIR/setup.py" ]] || [[ -f "$SCAN_DIR/pyproject.toml" ]] || [[ -f "$SCAN_DIR/Pipfile" ]]; then
             echo "language=python" >> $GITHUB_OUTPUT
             echo "project_root=$SCAN_DIR" >> $GITHUB_OUTPUT
             echo "✅ Detected: Python project in $SCAN_DIR"
-          elif [[ -f "$ROOT_DIR/requirements.txt" ]] || [[ -f "$ROOT_DIR/setup.py" ]]; then
+          elif [[ -f "$ROOT_DIR/requirements.txt" ]] || [[ -f "$ROOT_DIR/setup.py" ]] || [[ -f "$ROOT_DIR/pyproject.toml" ]] || [[ -f "$ROOT_DIR/Pipfile" ]]; then
             echo "language=python" >> $GITHUB_OUTPUT
             echo "project_root=$ROOT_DIR" >> $GITHUB_OUTPUT
             echo "✅ Detected: Python project in $ROOT_DIR"

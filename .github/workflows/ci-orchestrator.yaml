@@ -238,6 +238,7 @@ jobs:
     with:
       working_directory: ${{ fromJson(needs.load-config.outputs.config).project.working_directory || '.' }}
       python_version: ${{ fromJson(needs.load-config.outputs.config).project.version || '3.11' }}
+      install_command: ${{ fromJson(needs.load-config.outputs.config).build.install_command || '' }}
       run_tests: ${{ fromJson(needs.load-config.outputs.config).build.run_tests != false }}
       test_script: ${{ fromJson(needs.load-config.outputs.config).build.test_script || 'python -m pytest' }}
       build_command: ${{ fromJson(needs.load-config.outputs.config).build.build_script || '' }}
