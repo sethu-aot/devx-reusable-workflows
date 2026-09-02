@@ -27,6 +27,14 @@ on:
         description: "Push images and artifacts to registries?"
         type: boolean
         default: true
+      registry_username:
+        description: |
+          Registry username, passed as an input rather than a secret. A secret is
+          masked, and GitHub drops job outputs containing a masked value, which
+          empties image_uri for the scanners, the summary and the CD hand-off
+          whenever the username also appears in the image name.
+        type: string
+        default: ""
     secrets:
       # Pass through for Docker Hub / Generic Registries
       registry_username:
@@ -320,6 +328,7 @@ jobs:
       working_directory: ${{ fromJson(needs.load-config.outputs.config).docker.working_directory || '.' }}
       dockerfile: ${{ fromJson(needs.load-config.outputs.config).docker.dockerfile || 'Dockerfile' }}
       registry_type: ${{ fromJson(needs.load-config.outputs.config).docker.registry_type || 'ecr' }}
+      registry_username: ${{ inputs.registry_username }}
       image_name: ${{ fromJson(needs.load-config.outputs.config).docker.image_name }}
       image_tag: ${{ fromJson(needs.load-config.outputs.config).docker.image_tag || '' }}
       artifact_name: ${{ needs.load-config.outputs.artifact_name }}
@@ -369,6 +378,7 @@ jobs:
       image_uri: ${{ needs.docker.outputs.image_uri }}
       # Registry Authentication
       registry_type: ${{ fromJson(needs.load-config.outputs.config).docker.registry_type || 'ecr' }}
+      registry_username: ${{ inputs.registry_username }}
       # Prefer the docker registry the image was actually pushed to; fall back
       # to the Nexus docker registry for consumers using registry_type: nexus.
       registry_url: ${{ fromJson(needs.load-config.outputs.config).docker.registry_url || fromJson(needs.load-config.outputs.config).nexus.docker_registry_url || '' }}
@@ -403,6 +413,7 @@ jobs:
       image_uri: ${{ needs.docker.outputs.image_uri }}
       # Registry Authentication
       registry_type: ${{ fromJson(needs.load-config.outputs.config).docker.registry_type || 'ecr' }}
+      registry_username: ${{ inputs.registry_username }}
       # Prefer the docker registry the image was actually pushed to; fall back
       # to the Nexus docker registry for consumers using registry_type: nexus.
       registry_url: ${{ fromJson(needs.load-config.outputs.config).docker.registry_url || fromJson(needs.load-config.outputs.config).nexus.docker_registry_url || '' }}

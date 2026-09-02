@@ -31,6 +31,14 @@ on:
         description: "Registry URL (for generic/nexus)"
         type: string
         default: ""
+      registry_username:
+        description: |
+          Username for the generic registry. Prefer this over the secret of the
+          same name: a value passed as a secret is masked, and GitHub drops any
+          job output containing a masked value -- which silently empties
+          image_uri downstream when the username also appears in the image name.
+        type: string
+        default: ""
 
       # --- AWS AUTHENTICATION (for ECR images) ---
       aws_region:
@@ -189,7 +197,7 @@ jobs:
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ inputs.registry_url }}
-          username: ${{ secrets.registry_username }}
+          username: ${{ inputs.registry_username || secrets.registry_username }}
           password: ${{ secrets.registry_password }}
 
       # ------------------------------------------------------------------------

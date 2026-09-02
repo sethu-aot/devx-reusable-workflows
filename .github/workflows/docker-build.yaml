@@ -46,6 +46,14 @@ on:
         description: "URL of the registry (e.g., 'docker.io', 'ghcr.io'). Required for 'generic'."
         type: string
         default: ""
+      registry_username:
+        description: |
+          Username for the generic registry. Prefer this over the secret of the
+          same name: a value passed as a secret is masked, and GitHub drops any
+          job output containing a masked value -- which silently empties
+          image_uri downstream when the username also appears in the image name.
+        type: string
+        default: ""
       
       # --- MODE: AWS ECR ---
       aws_region:
@@ -197,7 +205,7 @@ jobs:
     # available in job-level `env:`. Resolve the presence check once here so
     # the login steps can branch on it.
     env:
-      HAS_REGISTRY_CREDS: ${{ secrets.registry_username != '' }}
+      HAS_REGISTRY_CREDS: ${{ (inputs.registry_username || secrets.registry_username) != '' }}
 
     steps:
       # ----------------------------------------------------------------------
@@ -234,7 +242,7 @@ jobs:
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ inputs.registry_url }}
-          username: ${{ secrets.registry_username }}
+          username: ${{ inputs.registry_username || secrets.registry_username }}
           password: ${{ secrets.registry_password }}
 
       # MODE C: Nexus Docker Registry
