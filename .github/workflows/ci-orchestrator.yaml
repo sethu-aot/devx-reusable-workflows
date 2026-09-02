@@ -339,6 +339,9 @@ jobs:
       registry_username: ${{ inputs.registry_username }}
       image_name: ${{ fromJson(needs.load-config.outputs.config).docker.image_name }}
       image_tag: ${{ inputs.image_tag || fromJson(needs.load-config.outputs.config).docker.image_tag || '' }}
+      # Opt-in per project: only worth it for mutable tags (a release
+      # candidate that may be rebuilt), never for commit-SHA tags.
+      backup_existing_tag: ${{ fromJson(needs.load-config.outputs.config).docker.backup_existing_tag == true }}
       artifact_name: ${{ needs.load-config.outputs.artifact_name }}
       # AWS Context for ECR
       aws_region: ${{ fromJson(needs.load-config.outputs.config).aws.region || 'us-east-1' }}

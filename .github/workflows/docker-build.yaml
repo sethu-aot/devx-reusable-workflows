@@ -106,6 +106,15 @@ on:
         description: "Push the image to the registry?"
         type: boolean
         default: true
+      backup_existing_tag:
+        description: |
+          Before pushing, copy any image already at this tag to <tag>-backup.
+          Only meaningful for mutable tags such as a release candidate that can
+          be rebuilt: it keeps one level of undo, because overwriting the tag
+          otherwise makes the previous image unreachable. Pointless for
+          immutable tags like a commit SHA, so it is off by default.
+        type: boolean
+        default: false
 
     secrets:
       # Secrets for 'generic' mode
@@ -443,6 +452,30 @@ jobs:
             echo "📋 Combined Build Args: $ARGS"
           else
             echo "args=" >> $GITHUB_OUTPUT
+          fi
+
+      # Runs after login and after the tag is known, but before the push that
+      # would overwrite it.
+      - name: Backup Existing Tag
+        if: inputs.push == true && inputs.backup_existing_tag == true
+        env:
+          IMAGE_URI: ${{ steps.meta.outputs.image_uri }}
+        run: |
+          set -uo pipefail
+          BACKUP="${IMAGE_URI}-backup"
+
+          if ! docker buildx imagetools inspect "$IMAGE_URI" >/dev/null 2>&1; then
+            echo "Nothing at ${IMAGE_URI} yet; no backup needed."
+            exit 0
+          fi
+
+          echo "Backing up ${IMAGE_URI} -> ${BACKUP}"
+          # Manifest-only copy: the registry re-points a tag, no layers move.
+          if docker buildx imagetools create --tag "$BACKUP" "$IMAGE_URI"; then
+            echo "Previous image preserved at ${BACKUP}"
+          else
+            echo "::error::Could not back up ${IMAGE_URI}. Refusing to overwrite it."
+            exit 1
           fi
 
       - name: Build and Push Docker Image
