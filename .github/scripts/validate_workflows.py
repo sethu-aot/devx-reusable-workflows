@@ -51,6 +51,21 @@ def self_callee(uses):
 
 
 SHA_RE = re.compile(r'^[0-9a-f]{40}$')
+_USES_RE = re.compile(r'\buses:\s*(\S+)')
+
+
+def iter_uses(src):
+    """Yield every real `uses:` value, ignoring YAML comments.
+
+    A workflow may document how to call it in a header comment block. Those
+    example `uses:` lines are documentation, not dependencies, and must not be
+    reported as unpinned actions.
+    """
+    for line in src.split('\n'):
+        code = line.split('#', 1)[0]
+        m = _USES_RE.search(code)
+        if m:
+            yield m.group(1)
 EXPR_RE = re.compile(r'\$\{\{(.+?)\}\}', re.S)
 
 # Workflows that are entrypoints for humans/CI rather than reusable modules.
@@ -193,7 +208,9 @@ def main() -> int:
                               f"does not declare")
 
         # ---- 5. action pinning --------------------------------------------
-        for ref in re.findall(r'uses:\s*(\S+)', src):
+        # Only real `uses:` keys -- a commented-out example (usage docs in a
+        # header block) is documentation, not a dependency.
+        for ref in iter_uses(src):
             if self_callee(ref) or ref.startswith('./'):
                 continue
             if '@' not in ref:

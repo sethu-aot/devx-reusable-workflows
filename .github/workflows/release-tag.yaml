@@ -1,0 +1,220 @@
+name: "Module: Create Release Tag"
+
+# ------------------------------------------------------------------------------
+# Cuts an annotated release-candidate tag (X.Y.Z-rc by default) on the release
+# branch, auto-incrementing the patch from the highest existing tag.
+#
+# WHY THIS IS A MODULE AND NOT A TAG TRIGGER
+#   GitHub does not start a workflow run from an event created with the default
+#   GITHUB_TOKEN. A tag pushed here will therefore NOT fire a `push: tags:`
+#   workflow. Callers must use the `tag` output to drive the build in the same
+#   run -- see the worked example below -- or push the tag with a PAT.
+#
+# USAGE
+#   jobs:
+#     tag:
+#       uses: <owner>/devx-reusable-workflows/.github/workflows/release-tag.yaml@v1
+#       permissions:
+#         contents: write
+#       with:
+#         base_branch: main
+#
+#     build:
+#       needs: tag
+#       uses: <owner>/devx-reusable-workflows/.github/workflows/ci-orchestrator.yaml@v1
+#       with:
+#         config_path: devx-ci.yaml
+#         push: true
+#         image_tag: ${{ needs.tag.outputs.tag }}
+# ------------------------------------------------------------------------------
+
+on:
+  workflow_call:
+    inputs:
+      base_branch:
+        description: "Branch the tagged commit must be reachable from"
+        type: string
+        default: "main"
+      commit_sha:
+        description: "Commit to tag. Defaults to the tip of base_branch."
+        type: string
+        default: ""
+      tag_name:
+        description: "Explicit tag, e.g. 1.2.0-rc. Leave empty to auto-increment the patch."
+        type: string
+        default: ""
+      version_suffix:
+        description: "Suffix identifying the release stream, e.g. -rc. Use '' for plain X.Y.Z."
+        type: string
+        default: "-rc"
+      tag_message:
+        description: "Annotation message. Defaults to 'Release <tag>'."
+        type: string
+        default: ""
+      dry_run:
+        description: "Resolve and validate the tag but do not create or push it"
+        type: boolean
+        default: false
+
+    outputs:
+      tag:
+        description: "The tag that was created (or would be, on a dry run)"
+        value: ${{ jobs.create-tag.outputs.tag }}
+      commit:
+        description: "The commit the tag points at"
+        value: ${{ jobs.create-tag.outputs.commit }}
+      auto_generated:
+        description: "true when the tag was derived rather than supplied"
+        value: ${{ jobs.create-tag.outputs.auto_generated }}
+
+permissions:
+  contents: read
+
+jobs:
+  create-tag:
+    name: Create Annotated Release Tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # create and push the tag
+
+    outputs:
+      tag: ${{ steps.resolve_tag.outputs.tag }}
+      commit: ${{ steps.resolve_commit.outputs.sha }}
+      auto_generated: ${{ steps.resolve_tag.outputs.auto_generated }}
+
+    steps:
+      - name: Checkout repository (full history and tags)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Tag creation rewrites shared history, so require a writer.
+      - name: Verify the actor may create release tags
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { data: perm } =
+              await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: context.actor,
+              });
+            if (!['admin', 'maintain', 'write'].includes(perm.permission)) {
+              core.setFailed(
+                `${context.actor} has '${perm.permission}' permission; ` +
+                `creating a release tag requires write, maintain or admin.`
+              );
+            }
+
+      - name: Resolve commit to tag
+        id: resolve_commit
+        env:
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_BRANCH" --tags
+
+          if [[ -n "$COMMIT_SHA" ]]; then
+            SHA="$COMMIT_SHA"
+          else
+            SHA=$(git rev-parse "origin/${BASE_BRANCH}")
+          fi
+
+          if ! git cat-file -e "${SHA}^{commit}" 2>/dev/null; then
+            echo "::error::Commit $SHA does not exist."
+            exit 1
+          fi
+          if ! git branch -r --contains "$SHA" | grep -qx "  origin/${BASE_BRANCH}"; then
+            echo "::error::Commit $SHA is not reachable from ${BASE_BRANCH}; refusing to tag it."
+            exit 1
+          fi
+
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Tagging commit $SHA on ${BASE_BRANCH}"
+
+      - name: Resolve tag name
+        id: resolve_tag
+        env:
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          TAG_NAME: ${{ inputs.tag_name }}
+          SUFFIX: ${{ inputs.version_suffix }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$TAG_NAME" ]]; then
+            TAG="$TAG_NAME"
+            AUTO=false
+          else
+            # Only consider release tags already merged into the release branch,
+            # so an abandoned tag on a side branch cannot advance the version.
+            PATTERN="^[0-9]+\.[0-9]+\.[0-9]+$(printf '%s' "$SUFFIX" | sed 's/[.[\*^$]/\\&/g')$"
+            EXISTING=$(git tag -l --merged "origin/${BASE_BRANCH}" | grep -E "$PATTERN" || true)
+
+            if [[ -z "$EXISTING" ]]; then
+              TAG="0.0.1${SUFFIX}"
+              echo "No existing release tag on ${BASE_BRANCH}; starting at $TAG"
+            else
+              LATEST=$(printf '%s\n' "$EXISTING" | sort -V | tail -1)
+              if [[ "$LATEST" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+                TAG="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$(( BASH_REMATCH[3] + 1 ))${SUFFIX}"
+                echo "Latest is $LATEST; next is $TAG"
+              else
+                echo "::error::Cannot parse version from '$LATEST'."
+                exit 1
+              fi
+            fi
+            AUTO=true
+          fi
+
+          if [[ ! "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::Tag '$TAG' is not X.Y.Z${SUFFIX}."
+            exit 1
+          fi
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists. Pass tag_name to choose another."
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "auto_generated=$AUTO" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push the tag
+        if: inputs.dry_run != true
+        env:
+          TAG: ${{ steps.resolve_tag.outputs.tag }}
+          COMMIT: ${{ steps.resolve_commit.outputs.sha }}
+          MESSAGE: ${{ inputs.tag_message }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$COMMIT" -m "${MESSAGE:-Release $TAG}"
+          git push origin "$TAG"
+          echo "Created $TAG at $COMMIT"
+
+      - name: Summary
+        if: always()
+        env:
+          TAG: ${{ steps.resolve_tag.outputs.tag }}
+          COMMIT: ${{ steps.resolve_commit.outputs.sha }}
+          AUTO: ${{ steps.resolve_tag.outputs.auto_generated }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          {
+            echo "## 🏷️ Release Tag"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Tag | \`${TAG:-n/a}\` |"
+            echo "| Commit | \`${COMMIT:-n/a}\` |"
+            echo "| Auto-generated | ${AUTO:-n/a} |"
+            echo "| Created by | ${ACTOR} |"
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo ""
+              echo "> Dry run: the tag was resolved and validated but not created."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
