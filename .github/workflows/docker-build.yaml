@@ -193,6 +193,12 @@ jobs:
       image_uri: ${{ steps.meta.outputs.image_uri }}
       image_digest: ${{ steps.build.outputs.digest }}
 
+    # The `secrets` context is not available in a step-level `if:`, but it is
+    # available in job-level `env:`. Resolve the presence check once here so
+    # the login steps can branch on it.
+    env:
+      HAS_REGISTRY_CREDS: ${{ secrets.registry_username != '' }}
+
     steps:
       # ----------------------------------------------------------------------
       # 1. SETUP
@@ -221,14 +227,11 @@ jobs:
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
 
       # MODE B: Generic Registry (Docker Hub, GHCR, etc.)
+      # Skipped on a PR that does not push: forks and PR builds have no
+      # registry credentials, and a login attempt would fail the job.
       - name: Login to Generic Registry
-<<<<<<< HEAD
-        if: inputs.registry_type == 'generic' && (inputs.push == true || secrets.registry_username != '')
-        uses: docker/login-action@v3.0.0
-=======
-        if: inputs.registry_type == 'generic'
+        if: inputs.registry_type == 'generic' && (inputs.push == true || env.HAS_REGISTRY_CREDS == 'true')
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
->>>>>>> 11fbd7719a0edbef1b32a94f246cb7fb2bbd6141
         with:
           registry: ${{ inputs.registry_url }}
           username: ${{ secrets.registry_username }}

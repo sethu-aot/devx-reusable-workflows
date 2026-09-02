@@ -163,11 +163,14 @@ jobs:
         env:
           INSTALL_COMMAND: ${{ inputs.install_command }}
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
-<<<<<<< HEAD
-          if [[ -n "${{ inputs.install_command }}" ]]; then
-            echo "Running custom install command: ${{ inputs.install_command }}"
-            ${{ inputs.install_command }}
+
+          if [[ -n "$INSTALL_COMMAND" ]]; then
+            echo "Running custom install command: $INSTALL_COMMAND"
+            # install_command is executed as a shell command by design: it comes
+            # from the consuming repository's own devx-ci.yaml.
+            eval "$INSTALL_COMMAND"
           elif [[ -f "requirements.txt" ]]; then
             echo "Installing from requirements.txt"
             pip install -r requirements.txt
@@ -175,16 +178,16 @@ jobs:
             echo "Installing from pyproject.toml"
             pip install .
           else
-            echo "No requirements.txt or install command specified. Skipping dependency install."
+            echo "No requirements.txt, pyproject.toml or install_command. Skipping dependency install."
           fi
-=======
-          "${INSTALL_COMMAND}"
->>>>>>> 11fbd7719a0edbef1b32a94f246cb7fb2bbd6141
 
       # --- INSTALL TEST DEPENDENCIES ---
       - name: Install Test Dependencies
         if: inputs.run_tests == true
+        env:
+          INSTALL_COMMAND: ${{ inputs.install_command }}
         run: |
+          set -euo pipefail
           echo "🔍 Checking for test dependencies..."
           if [[ -f "requirements-dev.txt" ]]; then
             echo "Installing from requirements-dev.txt"
@@ -192,7 +195,7 @@ jobs:
           elif [[ -f "requirements-test.txt" ]]; then
             echo "Installing from requirements-test.txt"
             pip install -r requirements-test.txt
-          elif [[ -n "${{ inputs.install_command }}" ]]; then
+          elif [[ -n "$INSTALL_COMMAND" ]]; then
             echo "Dependencies already handled by custom install_command."
           else
             echo "No dev/test requirements file found. Installing pytest defaults."
