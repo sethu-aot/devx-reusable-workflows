@@ -359,14 +359,19 @@ jobs:
       inputs.push == true
     uses: sethu-aot/devx-reusable-workflows/.github/workflows/trivy-scan.yaml@v1
     secrets:
-      registry_username: ${{ secrets.NEXUS_USERNAME }}
-      registry_password: ${{ secrets.NEXUS_PASSWORD }}
+      # Generic-registry credentials first, Nexus as the fallback: these modules
+      # expose a single credential pair, so it must match whichever registry the
+      # image lives in.
+      registry_username: ${{ secrets.registry_username || secrets.NEXUS_USERNAME }}
+      registry_password: ${{ secrets.registry_password || secrets.NEXUS_PASSWORD }}
     with:
       scan_type: image
       image_uri: ${{ needs.docker.outputs.image_uri }}
       # Registry Authentication
       registry_type: ${{ fromJson(needs.load-config.outputs.config).docker.registry_type || 'ecr' }}
-      registry_url: ${{ fromJson(needs.load-config.outputs.config).nexus.docker_registry_url || '' }}
+      # Prefer the docker registry the image was actually pushed to; fall back
+      # to the Nexus docker registry for consumers using registry_type: nexus.
+      registry_url: ${{ fromJson(needs.load-config.outputs.config).docker.registry_url || fromJson(needs.load-config.outputs.config).nexus.docker_registry_url || '' }}
       # AWS credentials for ECR access
       aws_region: ${{ fromJson(needs.load-config.outputs.config).aws.region || 'us-east-1' }}
       role_to_assume: ${{ fromJson(needs.load-config.outputs.config).aws.role_to_assume || '' }}
@@ -388,14 +393,19 @@ jobs:
       (needs.trivy.result == 'success' || needs.trivy.result == 'skipped')
     uses: sethu-aot/devx-reusable-workflows/.github/workflows/sbom-generate.yaml@v1
     secrets:
-      registry_username: ${{ secrets.NEXUS_USERNAME }}
-      registry_password: ${{ secrets.NEXUS_PASSWORD }}
+      # Generic-registry credentials first, Nexus as the fallback: these modules
+      # expose a single credential pair, so it must match whichever registry the
+      # image lives in.
+      registry_username: ${{ secrets.registry_username || secrets.NEXUS_USERNAME }}
+      registry_password: ${{ secrets.registry_password || secrets.NEXUS_PASSWORD }}
     with:
       sbom_type: image
       image_uri: ${{ needs.docker.outputs.image_uri }}
       # Registry Authentication
       registry_type: ${{ fromJson(needs.load-config.outputs.config).docker.registry_type || 'ecr' }}
-      registry_url: ${{ fromJson(needs.load-config.outputs.config).nexus.docker_registry_url || '' }}
+      # Prefer the docker registry the image was actually pushed to; fall back
+      # to the Nexus docker registry for consumers using registry_type: nexus.
+      registry_url: ${{ fromJson(needs.load-config.outputs.config).docker.registry_url || fromJson(needs.load-config.outputs.config).nexus.docker_registry_url || '' }}
       # AWS credentials for ECR access
       aws_region: ${{ fromJson(needs.load-config.outputs.config).aws.region || 'us-east-1' }}
       role_to_assume: ${{ fromJson(needs.load-config.outputs.config).aws.role_to_assume || '' }}
