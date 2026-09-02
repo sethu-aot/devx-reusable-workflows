@@ -67,7 +67,11 @@ on:
 
 # Prevent multiple runs on same ref (with smart cancellation)
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # config_path keeps each component in its own group. github.workflow is the
+  # CALLER's workflow name, so a monorepo release that invokes this orchestrator
+  # once per component would otherwise put every call in one group and have them
+  # cancel each other -- leaving a single component built.
+  group: ci-${{ github.workflow }}-${{ inputs.config_path }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' }}
   # ^ Only cancel in-progress runs on PR/feature branches, not on main/master
 
