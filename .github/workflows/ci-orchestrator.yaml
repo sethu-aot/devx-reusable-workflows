@@ -139,18 +139,27 @@ jobs:
           echo "sast_tool=$SAST_TOOL" >> $GITHUB_OUTPUT
           echo "🔍 SAST tool: $SAST_TOOL"
 
-          # Determine expected artifact name based on language
-          if [[ "$LANGUAGE" == "maven" ]]; then
-            ARTIFACT_NAME="maven-build-artifacts-${GH_RUN_ID}"
-          elif [[ "$LANGUAGE" == "node" ]]; then
-            ARTIFACT_NAME="node-build-artifacts-${GH_RUN_ID}"
-          elif [[ "$LANGUAGE" == "python" ]]; then
-            ARTIFACT_NAME="python-build-artifacts-${GH_RUN_ID}"
-          else
+          # Determine the expected artifact name.
+          #
+          # The build modules only upload a GitHub artifact when
+          # build.artifact_path is set -- there is nothing to hand off otherwise.
+          # Naming one unconditionally makes docker-build try to download an
+          # artifact that was never produced, which fails the job. Only name it
+          # when the config actually asks for one.
+          ARTIFACT_PATH=$(yq '.build.artifact_path // ""' "${CONFIG_PATH}")
+          if [[ -z "$ARTIFACT_PATH" || "$ARTIFACT_PATH" == "null" ]]; then
             ARTIFACT_NAME=""
+            echo "📦 No build.artifact_path configured; Docker will build from source."
+          else
+            case "$LANGUAGE" in
+              maven)  ARTIFACT_NAME="maven-build-artifacts-${GH_RUN_ID}" ;;
+              node)   ARTIFACT_NAME="node-build-artifacts-${GH_RUN_ID}" ;;
+              python) ARTIFACT_NAME="python-build-artifacts-${GH_RUN_ID}" ;;
+              *)      ARTIFACT_NAME="" ;;
+            esac
+            echo "📦 Artifact name: $ARTIFACT_NAME"
           fi
           echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
-          echo "📦 Artifact name: $ARTIFACT_NAME"
 
   # ---------------------------------------------------------------------------
   # 2. PRE-BUILD SECURITY GATES (Parallel) - MULTI-SAST SUPPORT
