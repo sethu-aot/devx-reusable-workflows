@@ -26,11 +26,13 @@ on:
       environment:
         description: "Target environment: dev, qa, staging, production"
         type: string
-        required: true
+        required: false
+        default: "dev"
       image_uri:
         description: "Docker image URI to deploy"
         type: string
-        required: true
+        required: false
+        default: ""
       
       # --- OPTIONAL INPUTS ---
       config_path:
