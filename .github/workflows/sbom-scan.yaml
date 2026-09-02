@@ -167,13 +167,18 @@ jobs:
       - name: Install Grype
         run: |
           set -euo pipefail
-          VERSION="v0.77.0"
+          # Keep this in step with the Syft that produces the SBOM. Grype can only
+          # decode SBOM formats its embedded Syft understands, and a stale pin
+          # fails with "sbom format not recognized" rather than anything obvious.
+          VERSION="v0.118.0"
           # Fetch the installer from the pinned release tag, not from `main`:
           # a branch ref is mutable and this script runs as root on the runner.
-          curl -sSfL "https://raw.githubusercontent.com/anchore/grype/${VERSION}/install.sh"             | sh -s -- -b /usr/local/bin "${VERSION}"
+          curl -sSfL "https://raw.githubusercontent.com/anchore/grype/${VERSION}/install.sh" \
+            | sh -s -- -b /usr/local/bin "${VERSION}"
           grype version
 
       - name: Run Grype Analysis
+        id: grype
         timeout-minutes: 10
         env:
           GRYPE_DB_VALIDATE_AGE: "false"
@@ -182,19 +187,52 @@ jobs:
         run: |
           echo "🔍 Updating Grype Database..."
           grype db update || echo "::warning::Grype DB update failed. Using existing DB."
-          
+
           echo "🔍 Scanning SBOM: ${SBOM_FILE}"
-          grype sbom:${SBOM_FILE} \
+          REPORT="grype-results.${OUTPUT_FORMAT}"
+
+          # Grype exits non-zero both for "vulnerabilities at or above the
+          # threshold" and for hard failures such as an SBOM it cannot decode.
+          # Collapsing the two into one warning hid a complete scan failure
+          # behind a "vulnerabilities found" message, and left an unusable report
+          # that only surfaced later as "Invalid SARIF". Tell them apart by
+          # checking whether a usable report was actually produced.
+          set +e
+          grype "sbom:${SBOM_FILE}" \
             --fail-on "${SEVERITY_THRESHOLD}" \
             --output "${OUTPUT_FORMAT}" \
-            --file grype-results."${OUTPUT_FORMAT}" \
-            || echo "::warning::Vulnerabilities found. Check the Security tab for details."
+            --file "$REPORT"
+          GRYPE_EXIT=$?
+          set -e
+
+          if [[ ! -s "$REPORT" ]]; then
+            echo "::error::Grype produced no report (exit ${GRYPE_EXIT}); the SBOM was not scanned."
+            echo "report_valid=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [[ "$OUTPUT_FORMAT" == "sarif" || "$OUTPUT_FORMAT" == "json" ]]; then
+            if ! jq empty "$REPORT" 2>/dev/null; then
+              echo "::error::Grype wrote a malformed ${OUTPUT_FORMAT} report (exit ${GRYPE_EXIT}); refusing to upload it."
+              echo "report_valid=false" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+
+          echo "report_valid=true" >> "$GITHUB_OUTPUT"
+          if [[ $GRYPE_EXIT -ne 0 ]]; then
+            echo "::warning::Vulnerabilities at or above '${SEVERITY_THRESHOLD}' were found. See the Security tab."
+          else
+            echo "✅ No vulnerabilities at or above '${SEVERITY_THRESHOLD}'."
+          fi
 
       # ------------------------------------------------------------------------
       # REPORTING
       # ------------------------------------------------------------------------
+      # Only upload a report Grype actually produced and that parses. Uploading
+      # an empty file fails with "Invalid SARIF", which obscures the real cause.
       - name: Upload SARIF to Security Tab
-        if: inputs.upload_sarif == true && inputs.output_format == 'sarif' && always()
+        if: always() && inputs.upload_sarif == true && inputs.output_format == 'sarif' && steps.grype.outputs.report_valid == 'true'
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           sarif_file: grype-results.sarif
