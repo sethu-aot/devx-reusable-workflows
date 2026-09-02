@@ -70,16 +70,22 @@ jobs:
 
       - name: Prepare Notification
         id: prepare
+        env:
+          STATUS: ${{ inputs.status }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          IMAGE_URI: ${{ inputs.image_uri }}
+          MESSAGE: ${{ inputs.message }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_SERVER_URL: ${{ github.server_url }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_SHA: ${{ github.sha }}
+          GH_ACTOR: ${{ github.actor }}
         run: |
-          STATUS="${{ inputs.status }}"
-          ENV="${{ inputs.environment }}"
-          IMAGE="${{ inputs.image_uri }}"
-          CUSTOM_MSG="${{ inputs.message }}"
-          REPO="${{ github.repository }}"
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          COMMIT="${{ github.sha }}"
+          ENV="${ENVIRONMENT}"
+          CUSTOM_MSG="${MESSAGE}"
+          RUN_URL="${GH_SERVER_URL}/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}"
+          COMMIT="${GH_SHA}"
           SHORT_SHA="${COMMIT:0:7}"
-          ACTOR="${{ github.actor }}"
           
           # Determine emoji and color based on status
           case "$STATUS" in
@@ -198,11 +204,14 @@ jobs:
           fi
 
       - name: Generate Summary
+        env:
+          STATUS: ${{ inputs.status }}
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           echo "## Notification Sent" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Channel | Google Chat |" >> $GITHUB_STEP_SUMMARY
-          echo "| Status | ${{ inputs.status }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${STATUS} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${ENVIRONMENT} |" >> $GITHUB_STEP_SUMMARY

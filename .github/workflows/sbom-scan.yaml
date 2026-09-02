@@ -107,14 +107,14 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # ------------------------------------------------------------------------
       # ARTIFACT RETRIEVAL
       # ------------------------------------------------------------------------
       - name: Download SBOM Artifact
         if: inputs.sbom_artifact_name != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ inputs.sbom_artifact_name }}
           path: .
@@ -123,12 +123,15 @@ jobs:
       # VALIDATION & DISCOVERY
       # ------------------------------------------------------------------------
       - name: Locate SBOM File
+        env:
+          SBOM_PATH: ${{ inputs.sbom_path }}
+          SBOM_ARTIFACT_NAME: ${{ inputs.sbom_artifact_name }}
         run: |
           # 1. Start with the explicit path input
-          SBOM_FILE="${{ inputs.sbom_path }}"
+          SBOM_FILE="${SBOM_PATH}"
           
           # 2. If no path, but artifact was downloaded, look for SBOM files specifically
-          if [[ -z "$SBOM_FILE" && -n "${{ inputs.sbom_artifact_name }}" ]]; then
+          if [[ -z "$SBOM_FILE" && -n "${SBOM_ARTIFACT_NAME}" ]]; then
             echo "🔍 Searching for SBOM file in current directory..."
             ls -R .
             # First try: Look for files matching sbom-*.json pattern
@@ -137,13 +140,14 @@ jobs:
             # Second try: Look for files containing SBOM markers (CycloneDX or SPDX)
             if [[ -z "$SBOM_FILE" ]]; then
               echo "Looking for SBOM format markers..."
-              for json_file in $(find . -maxdepth 2 -name "*.json" -type f); do
+              # NUL-delimited so filenames containing spaces are handled.
+              while IFS= read -r -d '' json_file; do
                 if grep -q -E '"bomFormat"|"spdxVersion"' "$json_file" 2>/dev/null; then
                   SBOM_FILE="$json_file"
                   echo "Found SBOM format in: $json_file"
                   break
                 fi
-              done
+              done < <(find . -maxdepth 2 -name "*.json" -type f -print0)
             fi
           fi
           
@@ -162,23 +166,28 @@ jobs:
       # ------------------------------------------------------------------------
       - name: Install Grype
         run: |
+          set -euo pipefail
           VERSION="v0.77.0"
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin ${VERSION}
+          # Fetch the installer from the pinned release tag, not from `main`:
+          # a branch ref is mutable and this script runs as root on the runner.
+          curl -sSfL "https://raw.githubusercontent.com/anchore/grype/${VERSION}/install.sh"             | sh -s -- -b /usr/local/bin "${VERSION}"
           grype version
 
       - name: Run Grype Analysis
         timeout-minutes: 10
         env:
           GRYPE_DB_VALIDATE_AGE: "false"
+          SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
+          OUTPUT_FORMAT: ${{ inputs.output_format }}
         run: |
           echo "🔍 Updating Grype Database..."
           grype db update || echo "::warning::Grype DB update failed. Using existing DB."
           
-          echo "🔍 Scanning SBOM: ${{ env.SBOM_FILE }}"
-          grype sbom:${{ env.SBOM_FILE }} \
-            --fail-on ${{ inputs.severity_threshold }} \
-            --output ${{ inputs.output_format }} \
-            --file grype-results.${{ inputs.output_format }} \
+          echo "🔍 Scanning SBOM: ${SBOM_FILE}"
+          grype sbom:${SBOM_FILE} \
+            --fail-on "${SEVERITY_THRESHOLD}" \
+            --output "${OUTPUT_FORMAT}" \
+            --file grype-results."${OUTPUT_FORMAT}" \
             || echo "::warning::Vulnerabilities found. Check the Security tab for details."
 
       # ------------------------------------------------------------------------
@@ -186,14 +195,14 @@ jobs:
       # ------------------------------------------------------------------------
       - name: Upload SARIF to Security Tab
         if: inputs.upload_sarif == true && inputs.output_format == 'sarif' && always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           sarif_file: grype-results.sarif
           category: sbom-grype
 
       - name: Upload Scan Report Artifact
         if: inputs.upload_artifact == true && always()
-        uses: actions/upload-artifact@v4.3.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-scan-report-${{ github.sha }}
           path: grype-results.*
@@ -201,9 +210,12 @@ jobs:
 
       - name: Set Output
         id: set_output
+        env:
+          UPLOAD_ARTIFACT: ${{ inputs.upload_artifact }}
+          GH_SHA: ${{ github.sha }}
         run: |
-          if [[ "${{ inputs.upload_artifact }}" == "true" ]]; then
-            echo "report_name=sbom-scan-report-${{ github.sha }}" >> $GITHUB_OUTPUT
+          if [[ "${UPLOAD_ARTIFACT}" == "true" ]]; then
+            echo "report_name=sbom-scan-report-${GH_SHA}" >> $GITHUB_OUTPUT
           else
             echo "report_name=" >> $GITHUB_OUTPUT
           fi

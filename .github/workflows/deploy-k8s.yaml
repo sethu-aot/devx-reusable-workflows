@@ -1,5 +1,13 @@
 name: "Module: Deploy to K8s (Generic)"
 
+# ------------------------------------------------------------------------------
+# Generic Kubernetes deployment via Helm, authenticating with a supplied
+# kubeconfig rather than a cloud-provider credential chain.
+#
+# Use this for clusters that are NOT Amazon EKS (on-prem, GKE, AKS, k3s, ...).
+# For EKS, prefer deploy-eks.yaml, which authenticates via AWS OIDC.
+# ------------------------------------------------------------------------------
+
 on:
   workflow_call:
     inputs:
@@ -24,59 +32,225 @@ on:
         type: string
         default: "default"
       helm_set_values:
-        description: "Additional --set values"
+        description: "Additional --set values (comma separated, e.g. 'a=1,b=2')"
+        type: string
+        default: ""
+      helm_values_file:
+        description: "Path to an additional Helm values file"
         type: string
         default: ""
       atomic:
-        description: "Rollback on failure"
+        description: "Roll back automatically on failure"
         type: boolean
         default: true
       timeout:
-        description: "Helm timeout"
+        description: "Helm timeout (e.g. 10m)"
         type: string
         default: "10m"
+      ingress_domain:
+        description: "Base domain used to build the app URL when the chart defines no ingress host"
+        type: string
+        default: ""
+      dry_run:
+        description: "Render and validate without applying"
+        type: boolean
+        default: false
     secrets:
       KUBECONFIG_DATA:
         description: "Base64 encoded kubeconfig"
         required: true
 
+    outputs:
+      status:
+        description: "Deployment status (success | failed)"
+        value: ${{ jobs.deploy.outputs.status }}
+      url:
+        description: "Deployed application URL (empty if it could not be determined)"
+        value: ${{ jobs.deploy.outputs.url }}
+
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    outputs:
+      status: ${{ steps.result.outputs.status }}
+      url: ${{ steps.deploy_url.outputs.url }}
+
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup kubectl
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
         run: |
+          set -euo pipefail
+          if [[ -z "$KUBECONFIG_DATA" ]]; then
+            echo "::error::KUBECONFIG_DATA secret is empty. Pass it from the calling workflow."
+            exit 1
+          fi
           mkdir -p ~/.kube
-          echo "${{ secrets.KUBECONFIG_DATA }}" | base64 -d > ~/.kube/config
+          printf '%s' "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config || {
+            echo "::error::KUBECONFIG_DATA is not valid base64."
+            exit 1
+          }
           chmod 600 ~/.kube/config
           kubectl cluster-info || { echo "::error::Kubeconfig invalid or cluster unreachable"; exit 1; }
 
       - name: Setup Helm
-        uses: azure/setup-helm@v3
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: '3.14.0'
+          version: 'v3.14.4'
+
+      - name: Validate Helm Chart
+        env:
+          CHART_PATH: ${{ inputs.helm_chart_path }}
+        run: |
+          set -euo pipefail
+          if [[ ! -d "$CHART_PATH" ]]; then
+            echo "::error::Helm chart directory not found: $CHART_PATH"
+            exit 1
+          fi
+          helm lint "$CHART_PATH"
 
       - name: Deploy with Helm
+        id: helm
+        env:
+          RELEASE: ${{ inputs.helm_release_name }}
+          CHART_PATH: ${{ inputs.helm_chart_path }}
+          NAMESPACE: ${{ inputs.namespace }}
+          IMAGE_URI: ${{ inputs.image_uri }}
+          SET_VALUES: ${{ inputs.helm_set_values }}
+          VALUES_FILE: ${{ inputs.helm_values_file }}
+          TIMEOUT: ${{ inputs.timeout }}
+          ATOMIC: ${{ inputs.atomic }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          IMAGE="${{ inputs.image_uri }}"
-          IMAGE_REPO=$(echo "$IMAGE" | cut -d: -f1)
-          IMAGE_TAG=$(echo "$IMAGE" | cut -d: -f2)
-          
-          CMD="helm upgrade --install ${{ inputs.helm_release_name }} ${{ inputs.helm_chart_path }} \
-            --namespace ${{ inputs.namespace }} --create-namespace \
-            --set image.repository=$IMAGE_REPO \
-            --set image.tag=$IMAGE_TAG \
-            --timeout ${{ inputs.timeout }} --wait"
-          
-          if [[ "${{ inputs.atomic }}" == "true" ]]; then CMD="$CMD --atomic"; fi
-          
-          if [[ -n "${{ inputs.helm_set_values }}" ]]; then
-            IFS=',' read -ra VALUES <<< "${{ inputs.helm_set_values }}"
-            for val in "${VALUES[@]}"; do CMD="$CMD --set $val"; done
+          set -euo pipefail
+
+          # Split on the LAST separator so registries carrying an explicit
+          # port (host:5000/img:tag) still parse correctly.
+          if [[ "$IMAGE_URI" == *"@"* ]]; then
+            IMAGE_REPO="${IMAGE_URI%@*}"
+            IMAGE_TAG="${IMAGE_URI##*@}"
+          else
+            IMAGE_REPO="${IMAGE_URI%:*}"
+            IMAGE_TAG="${IMAGE_URI##*:}"
+            if [[ "$IMAGE_REPO" == "$IMAGE_URI" ]]; then
+              echo "::error::image_uri must include a tag or digest: $IMAGE_URI"
+              exit 1
+            fi
           fi
-          
-          echo "Executing: $CMD"
-          $CMD
+          echo "Repository: $IMAGE_REPO"
+          echo "Tag:        $IMAGE_TAG"
+
+          # Build argv as an array, never as a string, so values containing
+          # spaces or shell metacharacters cannot be re-parsed by the shell.
+          ARGS=(upgrade --install "$RELEASE" "$CHART_PATH"
+                --namespace "$NAMESPACE" --create-namespace
+                --set "image.repository=$IMAGE_REPO"
+                --set "image.tag=$IMAGE_TAG"
+                --timeout "$TIMEOUT" --wait)
+
+          [[ "$ATOMIC"  == "true" ]] && ARGS+=(--atomic)
+          [[ "$DRY_RUN" == "true" ]] && ARGS+=(--dry-run)
+          [[ -n "$VALUES_FILE" ]] && ARGS+=(--values "$VALUES_FILE")
+
+          if [[ -n "$SET_VALUES" ]]; then
+            IFS=',' read -ra VALUES <<< "$SET_VALUES"
+            for val in "${VALUES[@]}"; do
+              [[ -n "$val" ]] && ARGS+=(--set "$val")
+            done
+          fi
+
+          echo "Executing: helm ${ARGS[*]}"
+          helm "${ARGS[@]}"
+
+      - name: Verify Deployment
+        if: inputs.dry_run != true
+        env:
+          RELEASE: ${{ inputs.helm_release_name }}
+          NAMESPACE: ${{ inputs.namespace }}
+        run: |
+          set -uo pipefail
+          helm status "$RELEASE" --namespace "$NAMESPACE"
+          kubectl get pods --namespace "$NAMESPACE" \
+            -l "app.kubernetes.io/instance=$RELEASE" -o wide
+
+      - name: Generate Deployment URL
+        id: deploy_url
+        if: always()
+        env:
+          RELEASE: ${{ inputs.helm_release_name }}
+          NAMESPACE: ${{ inputs.namespace }}
+          INGRESS_DOMAIN: ${{ inputs.ingress_domain }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -uo pipefail
+          URL=""
+
+          HOST=$(kubectl get ingress -n "$NAMESPACE" \
+            -l "app.kubernetes.io/instance=$RELEASE" \
+            -o jsonpath='{.items[0].spec.rules[0].host}' 2>/dev/null || echo "")
+
+          if [[ -n "$HOST" ]]; then
+            URL="https://$HOST"
+          else
+            LB=$(kubectl get ingress -n "$NAMESPACE" \
+              -l "app.kubernetes.io/instance=$RELEASE" \
+              -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [[ -n "$LB" ]]; then
+              URL="http://$LB"
+            elif [[ -n "$INGRESS_DOMAIN" ]]; then
+              URL="https://${ENVIRONMENT}.${INGRESS_DOMAIN}"
+            fi
+          fi
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Application URL: ${URL:-<none>}"
+
+      - name: Set Result
+        id: result
+        if: always()
+        env:
+          HELM_OUTCOME: ${{ steps.helm.outcome }}
+        run: |
+          if [[ "$HELM_OUTCOME" == "success" ]]; then
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate Summary
+        if: always()
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          NAMESPACE: ${{ inputs.namespace }}
+          RELEASE: ${{ inputs.helm_release_name }}
+          IMAGE_URI: ${{ inputs.image_uri }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          STATUS: ${{ steps.result.outputs.status }}
+          URL: ${{ steps.deploy_url.outputs.url }}
+        run: |
+          {
+            echo "## Kubernetes Deployment Summary"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Environment | $ENVIRONMENT |"
+            echo "| Namespace | $NAMESPACE |"
+            echo "| Release | $RELEASE |"
+            echo "| Image | \`$IMAGE_URI\` |"
+            echo "| Dry run | $DRY_RUN |"
+            echo "| URL | ${URL:-N/A} |"
+            echo ""
+            if [[ "$STATUS" == "success" ]]; then
+              echo "### Deployment: **SUCCESS**"
+            else
+              echo "### Deployment: **FAILED**"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

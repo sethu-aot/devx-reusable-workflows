@@ -59,7 +59,7 @@ version: '3.8'
 
 services:
   demo-maven-app:
-    image: distributor-venue-authorized-techniques.trycloudflare.com/docker-hosted/demo-maven-app:latest
+    image: nexus-docker.example.com/docker-hosted/demo-maven-app:latest
     container_name: demo-maven-app
     ports:
       - "8080:8080"
@@ -85,7 +85,7 @@ echo "✅ docker-compose.yaml created"
 # Create Nexus credentials file for Docker login
 echo "🔐 Setting up Nexus registry authentication..."
 echo "NOTE: You'll need to manually configure Nexus credentials"
-echo "Run: docker login distributor-venue-authorized-techniques.trycloudflare.com"
+echo "Run: docker login nexus-docker.example.com"
 echo "Username: <NEXUS_USERNAME>"
 echo "Password: <NEXUS_PASSWORD>"
 
@@ -100,7 +100,7 @@ echo "AWS CLI version: $(aws --version)"
 echo ""
 echo "📋 Next Steps:"
 echo "1. Logout and login again (or run: newgrp docker)"
-echo "2. Configure Nexus credentials: docker login distributor-venue-authorized-techniques.trycloudflare.com"
+echo "2. Configure Nexus credentials: docker login nexus-docker.example.com"
 echo "3. Test deployment: cd /app && docker-compose up -d"
 echo "4. Verify health: curl http://localhost:8080/actuator/health"
 echo ""

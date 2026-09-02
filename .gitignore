@@ -1,0 +1,39 @@
+# Build output that must never be committed to a reference repository.
+target/
+build/
+dist/
+out/
+*.class
+*.jar
+*.war
+
+node_modules/
+coverage/
+.nyc_output/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+
+# Local editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Backups and scratch files
+*.bak
+*.orig
+*.tmp
+*~

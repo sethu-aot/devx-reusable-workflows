@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
   security-events: write
-  actions: write
+  actions: read           # artifact + SARIF metadata
   id-token: write
   packages: write
   pull-requests: write

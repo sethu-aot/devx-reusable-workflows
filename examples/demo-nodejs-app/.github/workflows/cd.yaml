@@ -17,9 +17,18 @@ on:
         default: "dev"
         required: true
       image_uri:
-        description: "Docker image URI (optional, uses latest from Nexus if empty)"
+        description: "Docker image URI to deploy, including tag or digest"
         type: string
-        default: ""
+        required: true
+
+# Token scopes required by the DevX orchestrators. Reusable workflows can never
+# hold MORE permission than their caller, so these must be declared here.
+# A CD-only workflow needs fewer scopes than the CI pipeline.
+permissions:
+  contents: read          # checkout
+  id-token: write         # AWS OIDC (EKS/ECS/EC2 deploys)
+  actions: read           # artifact metadata
+  deployments: write      # GitHub Deployments API
 
 jobs:
   deploy:

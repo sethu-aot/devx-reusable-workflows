@@ -91,7 +91,7 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # ------------------------------------------------------------------------
       # EXECUTION (Checkov)
@@ -99,7 +99,7 @@ jobs:
       - name: Run Checkov IaC Scan
         timeout-minutes: 15
         id: checkov
-        uses: bridgecrewio/checkov-action@v12.2850.0
+        uses: bridgecrewio/checkov-action@f967808197a8d784d3e72919f38c3ff0cda7884e # v12.3122.0
         with:
           directory: ${{ inputs.working_directory }}
           skip_check: ${{ inputs.skip_check }}
@@ -115,7 +115,7 @@ jobs:
       # ------------------------------------------------------------------------
       - name: Upload SARIF to Security Tab
         if: inputs.upload_sarif == true && always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           sarif_file: checkov.sarif
           category: iac-checkov

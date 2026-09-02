@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   demo-python-app:
-    image: socks-campus-varies-method.trycloudflare.com/demo-python-app:latest
+    image: nexus-docker.example.com/demo-python-app:latest
     container_name: demo-python-app
     ports:
       - "5000:5000"

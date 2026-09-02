@@ -88,19 +88,22 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4.0.2
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ inputs.role_to_assume }}
           aws-region: ${{ inputs.aws_region }}
 
       - name: Setup kubectl
+        env:
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          AWS_REGION: ${{ inputs.aws_region }}
         run: |
           aws eks update-kubeconfig \
-            --name "${{ inputs.cluster_name }}" \
-            --region ${{ inputs.aws_region }}
+            --name "${CLUSTER_NAME}" \
+            --region "${AWS_REGION}"
           
           kubectl cluster-info || {
             echo "::error::Failed to connect to EKS cluster"
@@ -109,18 +112,24 @@ jobs:
 
       - name: Patch Deployment Image
         id: patch
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+          DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
+          CONTAINER_NAME: ${{ inputs.container_name }}
+          IMAGE_URI: ${{ inputs.image_uri }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          TIMEOUT: ${{ inputs.timeout }}
         run: |
-          NAMESPACE="${{ inputs.namespace }}"
-          DEPLOYMENT="${{ inputs.deployment_name }}"
-          CONTAINER="${{ inputs.container_name }}"
-          IMAGE="${{ inputs.image_uri }}"
+          DEPLOYMENT="${DEPLOYMENT_NAME}"
+          CONTAINER="${CONTAINER_NAME}"
+          IMAGE="${IMAGE_URI}"
           
           echo "🚀 Patching deployment '$DEPLOYMENT' in namespace '$NAMESPACE'..."
           echo "Container: $CONTAINER"
           echo "New Image: $IMAGE"
           
           DRY_RUN_FLAG=""
-          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+          if [[ "${DRY_RUN}" == "true" ]]; then
             DRY_RUN_FLAG="--dry-run=server"
           fi
           
@@ -132,9 +141,9 @@ jobs:
             exit 1
           fi
           
-          if [[ "${{ inputs.dry_run }}" != "true" ]]; then
+          if [[ "${DRY_RUN}" != "true" ]]; then
             echo "📊 Waiting for rollout status..."
-            kubectl rollout status "deployment/$DEPLOYMENT" -n "$NAMESPACE" --timeout=${{ inputs.timeout }}
+            kubectl rollout status "deployment/$DEPLOYMENT" -n "$NAMESPACE" --timeout="${TIMEOUT}"
           else
             echo "✅ Dry run completed successfully"
           fi
@@ -142,8 +151,10 @@ jobs:
       - name: Set Result
         id: result
         if: always()
+        env:
+          STEP_PATCH_OUTCOME: ${{ steps.patch.outcome }}
         run: |
-          if [[ "${{ steps.patch.outcome }}" == "success" ]]; then
+          if [[ "${STEP_PATCH_OUTCOME}" == "success" ]]; then
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "status=failed" >> $GITHUB_OUTPUT
@@ -152,14 +163,17 @@ jobs:
       - name: Generate Deployment URL
         id: deploy_url
         if: always() && steps.patch.outcome == 'success'
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+          SERVICE_NAME: ${{ inputs.service_name }}
         run: |
           # Try to get host from ingress rules first
-          INGRESS_HOST=$(kubectl get ingress -n "${{ inputs.namespace }}" \
+          INGRESS_HOST=$(kubectl get ingress -n "${NAMESPACE}" \
             -o jsonpath='{.items[0].spec.rules[0].host}' 2>/dev/null || echo "")
           
           # If no host, try to get ALB DNS name from status
           if [[ -z "$INGRESS_HOST" ]]; then
-             INGRESS_ALB=$(kubectl get ingress -n "${{ inputs.namespace }}" \
+             INGRESS_ALB=$(kubectl get ingress -n "${NAMESPACE}" \
               -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
              
              if [[ -n "$INGRESS_ALB" ]]; then
@@ -176,15 +190,15 @@ jobs:
           # If no ingress host, try to get hostname from Service
           # Priority: 1. Specific service_name (if provided), 2. Any LoadBalancer in namespace
           SVC_FILTER=""
-          if [[ -n "${{ inputs.service_name }}" ]]; then
-            SVC_FILTER="${{ inputs.service_name }}"
+          if [[ -n "${SERVICE_NAME}" ]]; then
+            SVC_FILTER="${SERVICE_NAME}"
           fi
 
           if [[ -n "$SVC_FILTER" ]]; then
-            SVC_URL=$(kubectl get svc "$SVC_FILTER" -n "${{ inputs.namespace }}" \
+            SVC_URL=$(kubectl get svc "$SVC_FILTER" -n "${NAMESPACE}" \
               -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
           else
-            SVC_URL=$(kubectl get svc -n "${{ inputs.namespace }}" \
+            SVC_URL=$(kubectl get svc -n "${NAMESPACE}" \
               -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
           fi
           

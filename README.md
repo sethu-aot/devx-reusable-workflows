@@ -2,7 +2,9 @@
 
 **CI/CD Workflows for GitHub Actions**
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/AOT-Technologies/devx-reusable-workflows/releases)
+[![Version](https://img.shields.io/github/v/tag/AOT-Technologies/devx-reusable-workflows?label=version&sort=semver)](https://github.com/AOT-Technologies/devx-reusable-workflows/releases)
+[![Repo CI](https://github.com/AOT-Technologies/devx-reusable-workflows/actions/workflows/repo-ci.yaml/badge.svg)](https://github.com/AOT-Technologies/devx-reusable-workflows/actions/workflows/repo-ci.yaml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 A centralized collection of reusable GitHub Actions workflows for standardized, secure CI/CD across AOT projects.
 
@@ -42,9 +44,16 @@ devx-reusable-workflows/
 │   ├── deploy-k8s.yaml         # Generic K8s deployment
 │   ├── health-check.yaml       # Post-deployment verification
 │   ├── rollback.yaml           # Automated rollback logic
-│   └── notify-google-chat.yaml # Chat notifications
+│   ├── notify-google-chat.yaml # Chat notifications
+│   ├── repo-ci.yaml            # Self-validation (actionlint + contracts)
+│   └── release.yaml            # Cuts vX.Y.Z tags, moves the vX alias
+├── .github/scripts/
+│   └── validate_workflows.py   # Cross-workflow contract validation
 ├── docs/                       # Documentation
 ├── examples/                   # Template projects
+├── CONTRIBUTING.md             # Workflow authoring rules, release process
+├── SECURITY.md                 # Reporting, and the properties we maintain
+├── CHANGELOG.md
 └── README.md
 ```
 
@@ -80,6 +89,12 @@ deployment:
 ```
 
 ### 2. Create Workflow Files
+
+> **Pin to an immutable tag.** The examples below use `@v1`, which is a *moving*
+> alias for the latest `v1.x.y` release. That is fine while you are getting
+> started; for production repositories reference a specific release such as
+> `@v1.1.0` so an upstream change can never alter your pipeline without a PR.
+> See [Versioning](#-versioning).
 
 **CI Pipeline (`.github/workflows/ci.yaml`):**
 ```yaml
@@ -120,6 +135,9 @@ secrets: inherit
 | [docs/ROLLBACK_PROCEDURES.md](docs/ROLLBACK_PROCEDURES.md) | Rollback strategies |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | CI troubleshooting |
 | [docs/CD_TROUBLESHOOTING.md](docs/CD_TROUBLESHOOTING.md) | CD troubleshooting |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Authoring rules, validation, release process |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability, security properties |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 ---
 
@@ -148,20 +166,60 @@ secrets: inherit
 
 ## 🔐 Security
 
-All security scan results automatically upload to **GitHub Security → Code scanning alerts**:
-- `sast-semgrep` - Source code vulnerabilities
-- `iac-checkov` - Infrastructure misconfigurations  
-- `trivy-image` - Container vulnerabilities
-- `sbom-grype` - Dependency CVEs
+Scan results upload to **GitHub Security → Code scanning alerts**:
+
+| Category | Tool | Gates the pipeline? |
+|----------|------|---------------------|
+| `sast-semgrep` | Semgrep | Yes, when `fail_on_findings` is true (default) |
+| `iac-checkov` | Checkov | Yes, unless `soft_fail` is set |
+| `trivy-image` | Trivy | Yes, when `fail_on_vuln` is true (default) |
+| `sbom-grype` | Grype | **No — report only.** `sbom-scan` never fails the pipeline by design; use `trivy` for enforcement. |
+
+The workflows themselves are built to hold a set of security properties — no
+shell injection surface, SHA-pinned third-party actions, least-privilege tokens,
+OIDC instead of stored AWS keys. These are enforced in CI by
+`.github/scripts/validate_workflows.py`; see [SECURITY.md](SECURITY.md) for the
+full list and how to report a problem.
+
+---
+
+## 🏷️ Versioning
+
+This repository is versioned as a whole, following [Semantic Versioning](https://semver.org/).
+
+- **`@v1.1.0`** — an immutable release tag. Use this in production repositories.
+- **`@v1`** — a moving alias for the latest `v1.x.y`. Convenient, but it means
+  an upstream release changes your pipeline without a PR.
+- **`@main`** — never use this.
+
+Breaking changes to any `workflow_call` interface get a new major version and a
+new alias. Release history is in [CHANGELOG.md](CHANGELOG.md); the process is in
+[CONTRIBUTING.md](CONTRIBUTING.md#releases).
 
 ---
 
 ## 🏷️ GitHub Branching Strategy
-- main: Production-ready code only.
-- development: Integration branch for new features. CD triggers here for dev/qa environments.
-- feature/*: Individual work branches linked to Jira tickets.
+
+The model DevX recommends for a **consuming project repository**:
+
+- `main` — production-ready code only.
+- `development` — integration branch for new features. CD triggers here for dev/qa environments.
+- `feature/*` — individual work branches linked to Jira tickets.
+
+This repository is maintained differently: it ships workflows rather than a
+deployable application, so it has no environments and releases via tags instead.
+[docs/BRANCHING.md](docs/BRANCHING.md) documents both.
 
 ---
+## 🤝 Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR. In short: run
+`actionlint` and `python .github/scripts/validate_workflows.py` locally, never
+interpolate `${{ … }}` into a `run:` block, and pin third-party actions to a
+commit SHA.
+
+---
+
 ## 📄 License
 
-MIT License - See [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE).

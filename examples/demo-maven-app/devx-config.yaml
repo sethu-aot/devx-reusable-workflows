@@ -42,6 +42,6 @@ deployment:
 # AWS Configuration (OIDC for GitHub Actions)
 aws:
   default_region: ca-central-1
-  role_to_assume: arn:aws:iam::653405621825:role/GitHubActionsRole-test
+  role_to_assume: arn:aws:iam::123456789012:role/GitHubActionsRole
 
 # Test commit 11

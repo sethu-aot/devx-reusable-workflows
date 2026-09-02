@@ -59,6 +59,12 @@ on:
         type: string
         required: true
 
+      # Routing
+      ingress_domain:
+        description: "Base domain used to construct the app URL when no load balancer is attached"
+        type: string
+        default: ""
+
     outputs:
       status:
         description: "Deployment status"
@@ -69,6 +75,9 @@ on:
       service_arn:
         description: "Updated service ARN"
         value: ${{ jobs.deploy.outputs.service_arn }}
+      url:
+        description: "Deployed application URL (empty if it could not be determined)"
+        value: ${{ jobs.deploy.outputs.url }}
 
 permissions:
   contents: read
@@ -86,21 +95,25 @@ jobs:
       status: ${{ steps.result.outputs.status }}
       task_arn: ${{ steps.register.outputs.task_arn }}
       service_arn: ${{ steps.update.outputs.service_arn }}
+      url: ${{ steps.deploy_url.outputs.url }}
 
     steps:
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4.0.2
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ inputs.role_to_assume }}
           aws-region: ${{ inputs.aws_region }}
 
       - name: Get Current Task Definition
         id: current_task
+        env:
+          TASK_DEFINITION_FAMILY: ${{ inputs.task_definition_family }}
+          CONTAINER_NAME: ${{ inputs.container_name }}
         run: |
           echo "📋 Fetching current task definition..."
           
           TASK_DEF=$(aws ecs describe-task-definition \
-            --task-definition "${{ inputs.task_definition_family }}" \
+            --task-definition "${TASK_DEFINITION_FAMILY}" \
             --query 'taskDefinition' \
             --output json)
           
@@ -108,19 +121,22 @@ jobs:
           echo "$TASK_DEF" > current-task-def.json
           
           # Extract current image
-          CURRENT_IMAGE=$(echo "$TASK_DEF" | jq -r ".containerDefinitions[] | select(.name==\"${{ inputs.container_name }}\") | .image")
+          CURRENT_IMAGE=$(echo "$TASK_DEF" | jq -r ".containerDefinitions[] | select(.name==\"${CONTAINER_NAME}\") | .image")
           echo "Current image: $CURRENT_IMAGE"
           echo "current_image=$CURRENT_IMAGE" >> $GITHUB_OUTPUT
 
       - name: Update Task Definition
         id: update_task
+        env:
+          IMAGE_URI: ${{ inputs.image_uri }}
+          CONTAINER_NAME: ${{ inputs.container_name }}
         run: |
           echo "🔄 Updating task definition with new image..."
           
-          NEW_IMAGE="${{ inputs.image_uri }}"
+          NEW_IMAGE="${IMAGE_URI}"
           
           # Update image in task definition
-          jq --arg image "$NEW_IMAGE" --arg container "${{ inputs.container_name }}" \
+          jq --arg image "$NEW_IMAGE" --arg container "${CONTAINER_NAME}" \
             '.containerDefinitions = [.containerDefinitions[] | if .name == $container then .image = $image else . end]' \
             current-task-def.json > updated-task-def.json
           
@@ -145,38 +161,45 @@ jobs:
 
       - name: Update ECS Service
         id: update
+        env:
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          SERVICE_NAME: ${{ inputs.service_name }}
+          STEP_REGISTER_TASK_ARN: ${{ steps.register.outputs.task_arn }}
+          FORCE_NEW_DEPLOYMENT: ${{ inputs.force_new_deployment }}
+          DESIRED_COUNT: ${{ inputs.desired_count }}
         run: |
-          echo "🚀 Updating ECS service..."
-          
-          CLUSTER="${{ inputs.cluster_name }}"
-          SERVICE="${{ inputs.service_name }}"
-          TASK_ARN="${{ steps.register.outputs.task_arn }}"
-          
-          # Build update command
-          UPDATE_CMD="aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition $TASK_ARN"
-          
-          if [[ "${{ inputs.force_new_deployment }}" == "true" ]]; then
-            UPDATE_CMD="$UPDATE_CMD --force-new-deployment"
+          set -euo pipefail
+          echo "Updating ECS service..."
+
+          # argv array rather than a command string + eval: every value stays a
+          # single argument and can never be re-parsed as shell syntax.
+          ARGS=(ecs update-service
+                --cluster "$CLUSTER_NAME"
+                --service "$SERVICE_NAME"
+                --task-definition "$STEP_REGISTER_TASK_ARN")
+
+          [[ "$FORCE_NEW_DEPLOYMENT" == "true" ]] && ARGS+=(--force-new-deployment)
+
+          if [[ "$DESIRED_COUNT" =~ ^[0-9]+$ && "$DESIRED_COUNT" -gt 0 ]]; then
+            ARGS+=(--desired-count "$DESIRED_COUNT")
           fi
-          
-          if [[ "${{ inputs.desired_count }}" -gt 0 ]]; then
-            UPDATE_CMD="$UPDATE_CMD --desired-count ${{ inputs.desired_count }}"
-          fi
-          
-          # Execute update
-          SERVICE_ARN=$(eval $UPDATE_CMD --query 'service.serviceArn' --output text)
-          
+
+          SERVICE_ARN=$(aws "${ARGS[@]}" --query 'service.serviceArn' --output text)
+
           echo "Service updated: $SERVICE_ARN"
-          echo "service_arn=$SERVICE_ARN" >> $GITHUB_OUTPUT
+          echo "service_arn=$SERVICE_ARN" >> "$GITHUB_OUTPUT"
 
       - name: Wait for Service Stability
         if: inputs.wait_for_stability == true
+        env:
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          SERVICE_NAME: ${{ inputs.service_name }}
         run: |
           echo "⏳ Waiting for service stability..."
           
           aws ecs wait services-stable \
-            --cluster "${{ inputs.cluster_name }}" \
-            --services "${{ inputs.service_name }}" || {
+            --cluster "${CLUSTER_NAME}" \
+            --services "${SERVICE_NAME}" || {
             echo "::error::Service did not stabilize"
             exit 1
           }
@@ -184,11 +207,14 @@ jobs:
           echo "✅ Service is stable"
 
       - name: Verify Deployment
+        env:
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          SERVICE_NAME: ${{ inputs.service_name }}
         run: |
           echo "🔍 Verifying deployment..."
           
-          CLUSTER="${{ inputs.cluster_name }}"
-          SERVICE="${{ inputs.service_name }}"
+          CLUSTER="${CLUSTER_NAME}"
+          SERVICE="${SERVICE_NAME}"
           
           # Get running tasks
           TASKS=$(aws ecs list-tasks \
@@ -209,11 +235,47 @@ jobs:
               --output table
           fi
 
+      - name: Generate Deployment URL
+        id: deploy_url
+        if: always()
+        env:
+          CLUSTER: ${{ inputs.cluster_name }}
+          SERVICE: ${{ inputs.service_name }}
+          INGRESS_DOMAIN: ${{ inputs.ingress_domain }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -uo pipefail
+
+          # Resolve the ALB/NLB in front of the service, if any.
+          TG_ARN=$(aws ecs describe-services             --cluster "$CLUSTER" --services "$SERVICE"             --query 'services[0].loadBalancers[0].targetGroupArn'             --output text 2>/dev/null || echo "None")
+
+          LB_DNS=""
+          if [[ -n "$TG_ARN" && "$TG_ARN" != "None" ]]; then
+            LB_ARN=$(aws elbv2 describe-target-groups               --target-group-arns "$TG_ARN"               --query 'TargetGroups[0].LoadBalancerArns[0]'               --output text 2>/dev/null || echo "None")
+            if [[ -n "$LB_ARN" && "$LB_ARN" != "None" ]]; then
+              LB_DNS=$(aws elbv2 describe-load-balancers                 --load-balancer-arns "$LB_ARN"                 --query 'LoadBalancers[0].DNSName'                 --output text 2>/dev/null || echo "")
+            fi
+          fi
+
+          if [[ -n "$INGRESS_DOMAIN" ]]; then
+            URL="https://${ENVIRONMENT}.${INGRESS_DOMAIN}"
+          elif [[ -n "$LB_DNS" && "$LB_DNS" != "None" ]]; then
+            URL="http://${LB_DNS}"
+          else
+            URL=""
+            echo "::notice::No load balancer or ingress_domain found; application URL is unavailable."
+          fi
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Application URL: ${URL:-<none>}"
+
       - name: Set Result
         id: result
         if: always()
+        env:
+          STEP_UPDATE_SERVICE_ARN: ${{ steps.update.outputs.service_arn }}
         run: |
-          if [[ -n "${{ steps.update.outputs.service_arn }}" ]]; then
+          if [[ -n "${STEP_UPDATE_SERVICE_ARN}" ]]; then
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "status=failed" >> $GITHUB_OUTPUT
@@ -221,20 +283,28 @@ jobs:
 
       - name: Generate Summary
         if: always()
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          SERVICE_NAME: ${{ inputs.service_name }}
+          CONTAINER_NAME: ${{ inputs.container_name }}
+          IMAGE_URI: ${{ inputs.image_uri }}
+          STEP_REGISTER_TASK_ARN: ${{ steps.register.outputs.task_arn }}
+          STEP_RESULT_STATUS: ${{ steps.result.outputs.status }}
         run: |
           echo "## 🐳 ECS Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Cluster | ${{ inputs.cluster_name }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Service | ${{ inputs.service_name }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Container | ${{ inputs.container_name }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| New Image | \`${{ inputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Task Definition | ${{ steps.register.outputs.task_arn }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${ENVIRONMENT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cluster | ${CLUSTER_NAME} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | ${SERVICE_NAME} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Container | ${CONTAINER_NAME} |" >> $GITHUB_STEP_SUMMARY
+          echo "| New Image | \`${IMAGE_URI}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Task Definition | ${STEP_REGISTER_TASK_ARN} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [[ "${{ steps.result.outputs.status }}" == "success" ]]; then
+          if [[ "${STEP_RESULT_STATUS}" == "success" ]]; then
             echo "### ✅ Deployment: **SUCCESS**" >> $GITHUB_STEP_SUMMARY
           else
             echo "### ❌ Deployment: **FAILED**" >> $GITHUB_STEP_SUMMARY

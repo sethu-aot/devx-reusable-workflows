@@ -121,7 +121,7 @@ on:
 
 permissions:
   contents: read
-  actions: write  # Required for artifact uploads
+  actions: read           # artifact + SARIF metadata
 
 jobs:
   build:
@@ -140,10 +140,10 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Java
-        uses: actions/setup-java@v4.2.1
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           java-version: ${{ inputs.java_version }}
           distribution: ${{ inputs.distribution }}
@@ -153,11 +153,25 @@ jobs:
       # --- UNIT TEST STEP ---
       - name: Run Unit Tests
         if: inputs.run_tests == true
-        run: ${{ inputs.test_script }} -f pom.xml
+        env:
+          TEST_SCRIPT: ${{ inputs.test_script }}
+        run: |
+          set -euo pipefail
+          # This input is executed as a shell command by design: it comes from
+          # the consuming repository's own devx-ci.yaml, which is already trusted
+          # to the same degree as its build scripts.
+          eval "$TEST_SCRIPT -f pom.xml"
 
       - name: Build with Maven
         if: inputs.maven_args != 'none' && inputs.maven_args != ''
-        run: mvn ${{ inputs.maven_args }} -f pom.xml
+        env:
+          MAVEN_ARGS: ${{ inputs.maven_args }}
+        run: |
+          set -euo pipefail
+          # This input is executed as a shell command by design: it comes from
+          # the consuming repository's own devx-ci.yaml, which is already trusted
+          # to the same degree as its build scripts.
+          eval "mvn $MAVEN_ARGS -f pom.xml"
 
       # --- EXTRACT MAVEN COORDINATES ---
       - name: Extract Maven Coordinates
@@ -182,13 +196,18 @@ jobs:
       # --- DETECT ACTUAL ARTIFACT FILE ---
       - name: Detect Artifact File
         id: detect_artifact
+        env:
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
         run: |
           # Enable recursive globbing (**)
           shopt -s globstar
           shopt -s nullglob
           
-          echo "🔍 Searching for artifacts with pattern: ${{ inputs.artifact_path }}"
-          JAR_FILES=(${{ inputs.artifact_path }})
+          echo "🔍 Searching for artifacts with pattern: ${ARTIFACT_PATH}"
+          # Intentionally unquoted: artifact_path is a glob pattern and must
+          # be expanded. Parameter expansion cannot inject commands here.
+          # shellcheck disable=SC2206
+          JAR_FILES=($ARTIFACT_PATH)
           
           # Filter out .original files
           ACTUAL_JAR=""
@@ -200,7 +219,7 @@ jobs:
           done
           
           if [[ -z "$ACTUAL_JAR" ]]; then
-            echo "::error::No JAR file found matching pattern: ${{ inputs.artifact_path }}"
+            echo "::error::No JAR file found matching pattern: ${ARTIFACT_PATH}"
             echo "📂 Directory listing (recursive):"
             find . -maxdepth 3 -not -path '*/.*'
             exit 1
@@ -213,7 +232,7 @@ jobs:
 
       # --- STAGING ARTIFACT ---
       - name: Upload Artifact to GitHub (Staging)
-        uses: actions/upload-artifact@v4.3.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ inputs.artifact_name || format('maven-artifact-{0}', github.run_id) }}
           path: ${{ inputs.working_directory }}/${{ steps.detect_artifact.outputs.fullpath }}
@@ -232,8 +251,9 @@ jobs:
           ARTIFACT_ID: ${{ steps.maven_coords.outputs.artifact_id }}
           VERSION: ${{ steps.maven_coords.outputs.version }}
           PACKAGING: ${{ steps.maven_coords.outputs.packaging }}
+          STEP_DETECT_ARTIFACT_FULLPATH: ${{ steps.detect_artifact.outputs.fullpath }}
         run: |
-          JAR_FILE="${{ steps.detect_artifact.outputs.fullpath }}"
+          JAR_FILE="${STEP_DETECT_ARTIFACT_FULLPATH}"
           
           GROUP_PATH=$(echo "$GROUP_ID" | tr '.' '/')
           
@@ -299,16 +319,23 @@ jobs:
           fi
 
       - name: Summary
+        env:
+          STEP_MAVEN_COORDS_GROUP_ID: ${{ steps.maven_coords.outputs.group_id }}
+          STEP_MAVEN_COORDS_ARTIFACT_ID: ${{ steps.maven_coords.outputs.artifact_id }}
+          STEP_MAVEN_COORDS_VERSION: ${{ steps.maven_coords.outputs.version }}
+          STEP_DETECT_ARTIFACT_FILENAME: ${{ steps.detect_artifact.outputs.filename }}
+          STEP_UPLOAD_NEXUS_URL: ${{ steps.upload_nexus.outputs.url }}
+          STEP_UPLOAD_NEXUS_PATH: ${{ steps.upload_nexus.outputs.path }}
         run: |
           echo "## 📦 Maven Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Group ID | ${{ steps.maven_coords.outputs.group_id }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Artifact ID | ${{ steps.maven_coords.outputs.artifact_id }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | ${{ steps.maven_coords.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Local File | ${{ steps.detect_artifact.outputs.filename }} |" >> $GITHUB_STEP_SUMMARY
-          if [[ -n "${{ steps.upload_nexus.outputs.url }}" ]]; then
-            echo "| Remote Path | ${{ steps.upload_nexus.outputs.path }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Nexus URL | ${{ steps.upload_nexus.outputs.url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Group ID | ${STEP_MAVEN_COORDS_GROUP_ID} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Artifact ID | ${STEP_MAVEN_COORDS_ARTIFACT_ID} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${STEP_MAVEN_COORDS_VERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Local File | ${STEP_DETECT_ARTIFACT_FILENAME} |" >> $GITHUB_STEP_SUMMARY
+          if [[ -n "${STEP_UPLOAD_NEXUS_URL}" ]]; then
+            echo "| Remote Path | ${STEP_UPLOAD_NEXUS_PATH} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Nexus URL | ${STEP_UPLOAD_NEXUS_URL} |" >> $GITHUB_STEP_SUMMARY
           fi

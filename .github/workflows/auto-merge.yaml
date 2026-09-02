@@ -1,10 +1,15 @@
 name: "Utility: Auto-Merge PR"
 
 # ------------------------------------------------------------------------------
-# Automatically enables GitHub's native auto-merge feature for a Pull Request.
-# Requirements: 
-# 1. "Allow auto-merge" must be enabled in Repository Settings.
-# 2. Status checks must be required in Branch Protection rules.
+# Enables GitHub's native auto-merge on a Pull Request. The PR is merged by
+# GitHub itself once every required status check passes -- this workflow only
+# arms that behaviour, it never merges directly.
+#
+# Requirements:
+#   1. "Allow auto-merge" enabled in Repository Settings.
+#   2. Required status checks configured in the branch protection ruleset.
+#   3. The caller must grant `pull-requests: write` and `contents: write`;
+#      a reusable workflow can never hold more permission than its caller.
 # ------------------------------------------------------------------------------
 
 on:
@@ -16,12 +21,17 @@ on:
         default: "squash"
     secrets:
       GH_TOKEN:
-        description: "GitHub Token with pull-request:write permissions"
+        description: "GitHub token with pull-requests:write and contents:write"
         required: true
+
+permissions:
+  contents: write        # required by the auto-merge mutation
+  pull-requests: write   # enable auto-merge on the PR
 
 jobs:
   enable-auto-merge:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: github.event_name == 'pull_request'
     steps:
       - name: Enable Auto-Merge
@@ -30,5 +40,15 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           MERGE_METHOD: ${{ inputs.merge_method }}
         run: |
-          echo "🚀 Enabling auto-merge for PR: $PR_URL"
-          gh pr merge "$PR_URL" --auto --"$MERGE_METHOD"
+          set -euo pipefail
+
+          case "$MERGE_METHOD" in
+            merge|squash|rebase) ;;
+            *)
+              echo "::error::Invalid merge_method '$MERGE_METHOD'. Use merge, squash or rebase."
+              exit 1
+              ;;
+          esac
+
+          echo "Enabling auto-merge (${MERGE_METHOD}) for PR: $PR_URL"
+          gh pr merge "$PR_URL" --auto "--${MERGE_METHOD}"

@@ -20,6 +20,17 @@ on:
 # Concurrency is handled in ci-orchestrator.yaml
 # Adding it here causes deadlock!
 
+# Token scopes required by the DevX orchestrators. Reusable workflows can never
+# hold MORE permission than their caller, so these must be declared here.
+permissions:
+  contents: read          # checkout
+  id-token: write         # AWS OIDC (ECR push, EKS/ECS/EC2 deploys)
+  security-events: write  # SARIF upload to the Security tab
+  actions: read           # SARIF metadata for private repos
+  packages: write         # GHCR push
+  pull-requests: write    # SonarQube PR decoration
+  deployments: write      # GitHub Deployments API
+
 jobs:
   ci:
     name: DevX CI Pipeline

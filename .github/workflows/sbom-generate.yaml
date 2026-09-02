@@ -121,7 +121,7 @@ on:
 
 permissions:
   contents: read
-  actions: write     # Required to upload artifacts
+  actions: read           # artifact + SARIF metadata
   id-token: write    # Required for AWS OIDC
 
 jobs:
@@ -134,29 +134,33 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # ------------------------------------------------------------------------
       # VALIDATION (Defensive Governance)
       # ------------------------------------------------------------------------
       - name: Validate Inputs
+        env:
+          SBOM_TYPE: ${{ inputs.sbom_type }}
+          IMAGE_URI: ${{ inputs.image_uri }}
+          FORMAT: ${{ inputs.format }}
         run: |
           # Validate sbom_type
-          if [[ "${{ inputs.sbom_type }}" != "fs" ]] && [[ "${{ inputs.sbom_type }}" != "image" ]]; then
-            echo "::error::Validation Failed: sbom_type must be 'fs' or 'image', got '${{ inputs.sbom_type }}'"
+          if [[ "${SBOM_TYPE}" != "fs" ]] && [[ "${SBOM_TYPE}" != "image" ]]; then
+            echo "::error::Validation Failed: sbom_type must be 'fs' or 'image', got '${SBOM_TYPE}'"
             exit 1
           fi
           
           # Validate image_uri for image mode
-          if [[ "${{ inputs.sbom_type }}" == "image" && -z "${{ inputs.image_uri }}" ]]; then
+          if [[ "${SBOM_TYPE}" == "image" && -z "${IMAGE_URI}" ]]; then
             echo "::error::Validation Failed: 'image_uri' is required when sbom_type is 'image'"
             exit 1
           fi
           
           # Validate format
           VALID_FORMATS="cyclonedx-json|cyclonedx-xml|spdx-json|spdx-tag-value"
-          if [[ ! "${{ inputs.format }}" =~ ^($VALID_FORMATS)$ ]]; then
-            echo "::error::Validation Failed: Invalid format '${{ inputs.format }}'"
+          if [[ ! "${FORMAT}" =~ ^($VALID_FORMATS)$ ]]; then
+            echo "::error::Validation Failed: Invalid format '${FORMAT}'"
             echo "::error::Supported formats: cyclonedx-json, cyclonedx-xml, spdx-json, spdx-tag-value"
             exit 1
           fi
@@ -167,7 +171,7 @@ jobs:
       # Option A: AWS ECR (OIDC)
       - name: Configure AWS Credentials (ECR)
         if: inputs.registry_type == 'ecr' && inputs.role_to_assume != ''
-        uses: aws-actions/configure-aws-credentials@v4.0.2
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ inputs.role_to_assume }}
           aws-region: ${{ inputs.aws_region }}
@@ -175,14 +179,14 @@ jobs:
 
       - name: Login to Amazon ECR
         if: inputs.registry_type == 'ecr' && inputs.role_to_assume != ''
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
         with:
           mask-password: true
 
       # Option B: Generic / Nexus
       - name: Login to Registry (Generic/Nexus)
         if: (inputs.registry_type == 'generic' || inputs.registry_type == 'nexus') && inputs.registry_url != ''
-        uses: docker/login-action@v3.0.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ inputs.registry_url }}
           username: ${{ secrets.registry_username }}
@@ -192,7 +196,7 @@ jobs:
       # SETUP SYFT
       # ------------------------------------------------------------------------
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0.16.0
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
 
       - name: Verify Syft Installation
         run: |
@@ -205,11 +209,15 @@ jobs:
       - name: Generate SBOM (Filesystem)
         timeout-minutes: 10
         if: inputs.sbom_type == 'fs'
+        env:
+          SCAN_PATH: ${{ inputs.scan_path }}
+          FORMAT: ${{ inputs.format }}
+          GH_SHA: ${{ github.sha }}
         run: |
-          echo "📋 Generating filesystem SBOM for: ${{ inputs.scan_path }}"
-          syft dir:${{ inputs.scan_path }} \
-            -o ${{ inputs.format }} \
-            > sbom-${{ github.sha }}.json
+          echo "📋 Generating filesystem SBOM for: ${SCAN_PATH}"
+          syft dir:"${SCAN_PATH}" \
+            -o "${FORMAT}" \
+            > sbom-"${GH_SHA}".json
           echo "✅ SBOM generated successfully"
 
       # ------------------------------------------------------------------------
@@ -217,44 +225,52 @@ jobs:
       # ------------------------------------------------------------------------
       - name: Pull Image for SBOM
         if: inputs.sbom_type == 'image'
+        env:
+          IMAGE_URI: ${{ inputs.image_uri }}
         run: |
-          echo "📦 Pulling image for SBOM generation: ${{ inputs.image_uri }}"
-          docker pull ${{ inputs.image_uri }}
+          echo "📦 Pulling image for SBOM generation: ${IMAGE_URI}"
+          docker pull "${IMAGE_URI}"
           echo "✅ Image pulled successfully"
 
       - name: Generate SBOM (Image)
         timeout-minutes: 10
         if: inputs.sbom_type == 'image'
+        env:
+          IMAGE_URI: ${{ inputs.image_uri }}
+          FORMAT: ${{ inputs.format }}
+          GH_SHA: ${{ github.sha }}
         run: |
-          echo "📋 Generating image SBOM for: ${{ inputs.image_uri }}"
-          syft ${{ inputs.image_uri }} \
-            -o ${{ inputs.format }} \
-            > sbom-${{ github.sha }}.json
+          echo "📋 Generating image SBOM for: ${IMAGE_URI}"
+          syft "${IMAGE_URI}" \
+            -o "${FORMAT}" \
+            > sbom-"${GH_SHA}".json
           echo "✅ SBOM generated successfully"
 
       # ------------------------------------------------------------------------
       # SBOM VALIDATION
       # ------------------------------------------------------------------------
       - name: Validate SBOM
+        env:
+          GH_SHA: ${{ github.sha }}
         run: |
-          if [[ ! -f "sbom-${{ github.sha }}.json" ]]; then
+          if [[ ! -f "sbom-${GH_SHA}.json" ]]; then
             echo "::error::SBOM file not generated"
             exit 1
           fi
           
           # Check file size
-          SBOM_SIZE=$(stat -f%z "sbom-${{ github.sha }}.json" 2>/dev/null || stat -c%s "sbom-${{ github.sha }}.json")
+          SBOM_SIZE=$(stat -f%z "sbom-${GH_SHA}.json" 2>/dev/null || stat -c%s "sbom-${GH_SHA}.json")
           echo "📊 SBOM size: $SBOM_SIZE bytes"
           
           if [[ $SBOM_SIZE -lt 100 ]]; then
             echo "::error::SBOM file is suspiciously small ($SBOM_SIZE bytes)"
-            cat "sbom-${{ github.sha }}.json"
+            cat "sbom-${GH_SHA}.json"
             exit 1
           fi
           
           # Count components
           if command -v jq &> /dev/null; then
-            COMPONENT_COUNT=$(jq '[.components[]?, .packages[]?] | length' sbom-${{ github.sha }}.json 2>/dev/null || echo "unknown")
+            COMPONENT_COUNT=$(jq '[.components[]?, .packages[]?] | length' sbom-"${GH_SHA}".json 2>/dev/null || echo "unknown")
             echo "📦 Components found: $COMPONENT_COUNT"
           fi
 
@@ -263,7 +279,7 @@ jobs:
       # ------------------------------------------------------------------------
       - name: Upload SBOM Artifact
         if: inputs.upload_artifact == true
-        uses: actions/upload-artifact@v4.3.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-${{ github.sha }}
           path: sbom-${{ github.sha }}.json
@@ -271,9 +287,12 @@ jobs:
 
       - name: Set Output
         id: set_output
+        env:
+          UPLOAD_ARTIFACT: ${{ inputs.upload_artifact }}
+          GH_SHA: ${{ github.sha }}
         run: |
-          if [[ "${{ inputs.upload_artifact }}" == "true" ]]; then
-            echo "artifact_name=sbom-${{ github.sha }}" >> $GITHUB_OUTPUT
+          if [[ "${UPLOAD_ARTIFACT}" == "true" ]]; then
+            echo "artifact_name=sbom-${GH_SHA}" >> $GITHUB_OUTPUT
           else
             echo "artifact_name=" >> $GITHUB_OUTPUT
           fi
@@ -283,24 +302,30 @@ jobs:
       # ------------------------------------------------------------------------
       - name: Generate SBOM Summary
         if: always()
+        env:
+          SBOM_TYPE: ${{ inputs.sbom_type }}
+          IMAGE_URI: ${{ inputs.image_uri }}
+          SCAN_PATH: ${{ inputs.scan_path }}
+          FORMAT: ${{ inputs.format }}
+          GH_SHA: ${{ github.sha }}
         run: |
           echo "## 📋 SBOM Generation Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Type:** ${{ inputs.sbom_type }}" >> $GITHUB_STEP_SUMMARY
-          if [[ "${{ inputs.sbom_type }}" == "image" ]]; then
-            echo "- **Image:** \`${{ inputs.image_uri }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Type:** ${SBOM_TYPE}" >> $GITHUB_STEP_SUMMARY
+          if [[ "${SBOM_TYPE}" == "image" ]]; then
+            echo "- **Image:** \`${IMAGE_URI}\`" >> $GITHUB_STEP_SUMMARY
           else
-            echo "- **Path:** ${{ inputs.scan_path }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Path:** ${SCAN_PATH}" >> $GITHUB_STEP_SUMMARY
           fi
-          echo "- **Format:** ${{ inputs.format }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Format:** ${FORMAT}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [[ -f "sbom-${{ github.sha }}.json" ]]; then
-            SBOM_SIZE=$(stat -f%z "sbom-${{ github.sha }}.json" 2>/dev/null || stat -c%s "sbom-${{ github.sha }}.json")
+          if [[ -f "sbom-${GH_SHA}.json" ]]; then
+            SBOM_SIZE=$(stat -f%z "sbom-${GH_SHA}.json" 2>/dev/null || stat -c%s "sbom-${GH_SHA}.json")
             echo "✅ SBOM generated successfully ($SBOM_SIZE bytes)" >> $GITHUB_STEP_SUMMARY
             
             if command -v jq &> /dev/null; then
-              COMPONENT_COUNT=$(jq '[.components[]?, .packages[]?] | length' sbom-${{ github.sha }}.json 2>/dev/null || echo "unknown")
+              COMPONENT_COUNT=$(jq '[.components[]?, .packages[]?] | length' sbom-"${GH_SHA}".json 2>/dev/null || echo "unknown")
               echo "- **Components:** $COMPONENT_COUNT" >> $GITHUB_STEP_SUMMARY
             fi
           else

@@ -134,7 +134,7 @@ on:
 
 permissions:
   contents: read
-  actions: write
+  actions: read           # artifact + SARIF metadata
 
 jobs:
   build:
@@ -149,17 +149,24 @@ jobs:
     
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4.0.2
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node_version }}
           cache: npm
           cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
 
       - name: Install Dependencies
-        run: ${{ inputs.install_command }}
+        env:
+          INSTALL_COMMAND: ${{ inputs.install_command }}
+        run: |
+          set -euo pipefail
+          # This input is executed as a shell command by design: it comes from
+          # the consuming repository's own devx-ci.yaml, which is already trusted
+          # to the same degree as its build scripts.
+          eval "$INSTALL_COMMAND"
 
       - name: Run Unit Tests
         if: inputs.run_tests == true
@@ -178,7 +185,7 @@ jobs:
 
       - name: Upload Test Results
         if: always() && inputs.run_tests == true
-        uses: actions/upload-artifact@v4.3.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: node-test-results-${{ github.run_id }}
           path: |
@@ -213,15 +220,20 @@ jobs:
       - name: Detect Artifact File
         if: inputs.artifact_path != ''
         id: detect_artifact
+        env:
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
         run: |
           # Enable recursive globbing (**)
           shopt -s globstar
           shopt -s nullglob
           # Find the actual file from artifact_path pattern
-          ARTIFACT_FILES=(${{ inputs.artifact_path }})
+          # Intentionally unquoted: artifact_path is a glob pattern and must
+          # be expanded. Parameter expansion cannot inject commands here.
+          # shellcheck disable=SC2206
+          ARTIFACT_FILES=($ARTIFACT_PATH)
           
           if [[ ${#ARTIFACT_FILES[@]} -eq 0 ]]; then
-            echo "::error::No files found matching pattern: ${{ inputs.artifact_path }}"
+            echo "::error::No files found matching pattern: ${ARTIFACT_PATH}"
             exit 1
           fi
           
@@ -236,7 +248,7 @@ jobs:
       # --- STAGING ARTIFACT ---
       - name: Upload Artifact to GitHub (Staging)
         if: inputs.artifact_path != ''
-        uses: actions/upload-artifact@v4.3.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ inputs.artifact_name || format('node-artifact-{0}', github.run_id) }}
           path: ${{ inputs.working_directory }}/${{ steps.detect_artifact.outputs.fullpath }}
@@ -249,13 +261,19 @@ jobs:
         env:
           NEXUS_USER: ${{ secrets.NEXUS_USERNAME }}
           NEXUS_PASS: ${{ secrets.NEXUS_PASSWORD }}
+          NEXUS_REPO_TYPE: ${{ inputs.nexus_repo_type }}
+          NEXUS_URL: ${{ inputs.nexus_url }}
+          NEXUS_REPOSITORY: ${{ inputs.nexus_repository }}
+          STEP_DETECT_ARTIFACT_FULLPATH: ${{ steps.detect_artifact.outputs.fullpath }}
+          NEXUS_PATH: ${{ inputs.nexus_path }}
+          STEP_DETECT_ARTIFACT_FILENAME: ${{ steps.detect_artifact.outputs.filename }}
         run: |
-          if [[ "${{ inputs.nexus_repo_type }}" == "npm" ]]; then
+          if [[ "${NEXUS_REPO_TYPE}" == "npm" ]]; then
             echo "📤 Publishing to native NPM repository..."
             
             # Remove trailing slash from URL if present
-            CLEAN_URL=$(echo "${{ inputs.nexus_url }}" | sed 's|/*$||')
-            REGISTRY_URL="${CLEAN_URL}/repository/${{ inputs.nexus_repository }}/"
+            CLEAN_URL=$(echo "${NEXUS_URL}" | sed 's|/*$||')
+            REGISTRY_URL="${CLEAN_URL}/repository/${NEXUS_REPOSITORY}/"
             
             # Remove protocol for the auth key
             AUTH_KEY=$(echo "$REGISTRY_URL" | sed 's|^https:||' | sed 's|^http:||')
@@ -287,7 +305,6 @@ jobs:
             
             # Construct the download path for docker-build.yaml@v1
             PKG_NAME=$(node -p "require('./package.json').name")
-            PKG_VERSION=$(node -p "require('./package.json').version")
             # Robust way to get the filename npm pack will produce:
             # @scope/name@version -> scope-name-version.tgz
             # name@version -> name-version.tgz
@@ -301,17 +318,17 @@ jobs:
             
           else
             echo "📤 Uploading to RAW repository..."
-            ARTIFACT_FILE="${{ steps.detect_artifact.outputs.fullpath }}"
+            ARTIFACT_FILE="${STEP_DETECT_ARTIFACT_FULLPATH}"
             
             # Determine upload path
-            if [[ -n "${{ inputs.nexus_path }}" ]]; then
-              UPLOAD_PATH="${{ inputs.nexus_path }}"
+            if [[ -n "${NEXUS_PATH}" ]]; then
+              UPLOAD_PATH="${NEXUS_PATH}"
             else
               # Default: use filename in generic path
-              UPLOAD_PATH="generic/${{ steps.detect_artifact.outputs.filename }}"
+              UPLOAD_PATH="generic/${STEP_DETECT_ARTIFACT_FILENAME}"
             fi
             
-            FULL_URL="${{ inputs.nexus_url }}/repository/${{ inputs.nexus_repository }}/${UPLOAD_PATH}"
+            FULL_URL="${NEXUS_URL}/repository/${NEXUS_REPOSITORY}/${UPLOAD_PATH}"
             
             echo "File: $ARTIFACT_FILE"
             echo "URL: $FULL_URL" # URL logged may contain potential credential path | Mask or remove the echo if needed

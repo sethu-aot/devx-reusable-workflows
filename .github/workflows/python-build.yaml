@@ -129,7 +129,7 @@ on:
 
 permissions:
   contents: read
-  actions: write        # Required for upload-artifact
+  actions: read           # artifact + SARIF metadata
 
 jobs:
   build:
@@ -145,13 +145,13 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # ------------------------------------------------------------------------
       # SETUP & CACHE
       # ------------------------------------------------------------------------
       - name: Setup Python
-        uses: actions/setup-python@v5.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ inputs.python_version }}
           # pip cache omitted to avoid failure when requirements.txt is absent
@@ -160,8 +160,11 @@ jobs:
       # INSTALL
       # ------------------------------------------------------------------------
       - name: Install Dependencies
+        env:
+          INSTALL_COMMAND: ${{ inputs.install_command }}
         run: |
           python -m pip install --upgrade pip
+<<<<<<< HEAD
           if [[ -n "${{ inputs.install_command }}" ]]; then
             echo "Running custom install command: ${{ inputs.install_command }}"
             ${{ inputs.install_command }}
@@ -174,6 +177,9 @@ jobs:
           else
             echo "No requirements.txt or install command specified. Skipping dependency install."
           fi
+=======
+          "${INSTALL_COMMAND}"
+>>>>>>> 11fbd7719a0edbef1b32a94f246cb7fb2bbd6141
 
       # --- INSTALL TEST DEPENDENCIES ---
       - name: Install Test Dependencies
@@ -196,12 +202,19 @@ jobs:
       # --- UNIT TEST STEP ---
       - name: Run Unit Tests
         if: inputs.run_tests == true
-        run: ${{ inputs.test_script }}
+        env:
+          TEST_SCRIPT: ${{ inputs.test_script }}
+        run: |
+          set -euo pipefail
+          # This input is executed as a shell command by design: it comes from
+          # the consuming repository's own devx-ci.yaml, which is already trusted
+          # to the same degree as its build scripts.
+          eval "$TEST_SCRIPT"
 
       # Added test results capture
       - name: Upload Test Results
         if: always() && inputs.run_tests == true
-        uses: actions/upload-artifact@v4.3.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-test-results-${{ github.sha }}
           path: |
@@ -232,14 +245,19 @@ jobs:
       - name: Detect Artifact File
         if: inputs.artifact_path != ''
         id: detect_artifact
+        env:
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
         run: |
           # Enable recursive globbing (**)
           shopt -s globstar
           shopt -s nullglob
-          ARTIFACT_FILES=(${{ inputs.artifact_path }})
+          # Intentionally unquoted: artifact_path is a glob pattern and must
+          # be expanded. Parameter expansion cannot inject commands here.
+          # shellcheck disable=SC2206
+          ARTIFACT_FILES=($ARTIFACT_PATH)
           
           if [[ ${#ARTIFACT_FILES[@]} -eq 0 ]]; then
-            echo "::error::No files found matching pattern: ${{ inputs.artifact_path }}"
+            echo "::error::No files found matching pattern: ${ARTIFACT_PATH}"
             exit 1
           fi
           
@@ -254,7 +272,7 @@ jobs:
       # --- STAGING ARTIFACT (For Docker Build) ---
       - name: Upload Artifact to GitHub (Staging)
         if: inputs.artifact_path != ''
-        uses: actions/upload-artifact@v4.3.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ inputs.artifact_name || format('python-artifact-{0}', github.run_id) }}
           path: ${{ inputs.working_directory }}/${{ steps.detect_artifact.outputs.fullpath }}
@@ -271,8 +289,10 @@ jobs:
           NEXUS_REPO: ${{ inputs.nexus_repository }}
           NEXUS_PATH: ${{ inputs.nexus_path }}
           NEXUS_REPO_TYPE: ${{ inputs.nexus_repo_type }}
+          STEP_DETECT_ARTIFACT_FULLPATH: ${{ steps.detect_artifact.outputs.fullpath }}
+          STEP_DETECT_ARTIFACT_FILENAME: ${{ steps.detect_artifact.outputs.filename }}
         run: |
-          ARTIFACT_FILE="${{ steps.detect_artifact.outputs.fullpath }}"
+          ARTIFACT_FILE="${STEP_DETECT_ARTIFACT_FULLPATH}"
           
           if [[ "$NEXUS_REPO_TYPE" == "pypi" ]]; then
             echo "📤 Uploading to PyPI repository using twine..."
@@ -319,7 +339,7 @@ jobs:
               UPLOAD_PATH="$NEXUS_PATH"
             else
               # Default: use filename in generic path
-              UPLOAD_PATH="generic/${{ steps.detect_artifact.outputs.filename }}"
+              UPLOAD_PATH="generic/${STEP_DETECT_ARTIFACT_FILENAME}"
             fi
             
             FULL_URL="${NEXUS_URL}/repository/${NEXUS_REPO}/${UPLOAD_PATH}"

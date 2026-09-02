@@ -48,7 +48,7 @@ SSH into the instance and authenticate with Nexus:
 ssh -i <your-key.pem> ec2-user@<instance-ip>
 
 # Log in to the Nexus registry
-docker login array-beauty-beyond-previously.trycloudflare.com
+docker login nexus-docker.example.com
 
 # Enter your Nexus credentials when prompted
 # Username: <your-nexus-username>
@@ -59,7 +59,7 @@ This creates `~/.docker/config.json` for authenticated pulls.
 
 ### Step 4: Configure GitHub Actions IAM Role (Runner)
 
-The IAM role assumed by GitHub Actions (`GitHubActionsRole-test`) needs permission to send commands via SSM.
+The IAM role assumed by GitHub Actions (`GitHubActionsRole`) needs permission to send commands via SSM.
 
 #### For Linux / MacOS / Git Bash:
 ```bash
@@ -71,7 +71,7 @@ cat <<EOF > ssm-runner-policy.json
             "Effect": "Allow",
             "Action": ["ssm:SendCommand"],
             "Resource": [
-                "arn:aws:ec2:ca-central-1:653405621825:instance/i-07c20def55d6e203b",
+                "arn:aws:ec2:ca-central-1:123456789012:instance/i-07c20def55d6e203b",
                 "arn:aws:ssm:ca-central-1::document/AWS-RunShellScript"
             ]
         },
@@ -89,7 +89,7 @@ cat <<EOF > ssm-runner-policy.json
 EOF
 
 aws iam put-role-policy \
-  --role-name GitHubActionsRole-test \
+  --role-name GitHubActionsRole \
   --policy-name GitHubActionsSSMPolicy \
   --policy-document file://ssm-runner-policy.json
 ```
@@ -104,7 +104,7 @@ aws iam put-role-policy \
             "Effect": "Allow",
             "Action": ["ssm:SendCommand"],
             "Resource": [
-                "arn:aws:ec2:ca-central-1:653405621825:instance/i-07c20def55d6e203b",
+                "arn:aws:ec2:ca-central-1:123456789012:instance/i-07c20def55d6e203b",
                 "arn:aws:ssm:ca-central-1::document/AWS-RunShellScript"
             ]
         },
@@ -124,7 +124,7 @@ aws iam put-role-policy \
 2. Run this command:
 ```cmd
 aws iam put-role-policy ^
-  --role-name GitHubActionsRole-test ^
+  --role-name GitHubActionsRole ^
   --policy-name GitHubActionsSSMPolicy ^
   --policy-document file://ssm-runner-policy.json
 ```
@@ -247,7 +247,7 @@ If you see `401 Unauthorized` during deployment:
 1. Ensure `NEXUS_USERNAME` and `NEXUS_PASSWORD` secrets are set
 2. Verify the secrets are correct by testing manually:
    ```bash
-   docker login array-beauty-beyond-previously.trycloudflare.com -u <username> -p <password>
+   docker login nexus-docker.example.com -u <username> -p <password>
    ```
 
 ### Health Check Failures

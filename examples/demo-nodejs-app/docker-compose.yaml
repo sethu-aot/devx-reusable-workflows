@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   demo-nodejs-app:
-    image: distributor-venue-authorized-techniques.trycloudflare.com/demo-nodejs-app:latest
+    image: nexus-docker.example.com/demo-nodejs-app:latest
     container_name: demo-nodejs-app
     ports:
       - "3000:3000"

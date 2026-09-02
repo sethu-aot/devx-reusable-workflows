@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: array-beauty-beyond-previously.trycloudflare.com/docker-hosted/demo-nodejs-app
+  repository: nexus-docker.example.com/docker-hosted/demo-nodejs-app
   pullPolicy: Always
   tag: "latest"
 

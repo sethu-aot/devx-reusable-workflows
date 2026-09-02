@@ -124,15 +124,18 @@ jobs:
     steps:
       - name: Configure AWS Credentials
         if: inputs.role_to_assume != ''
-        uses: aws-actions/configure-aws-credentials@v4.0.2
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ inputs.role_to_assume }}
           aws-region: ${{ inputs.aws_region }}
 
       - name: Setup kubectl
         if: inputs.deployment_target == 'eks' && inputs.cluster_name != ''
+        env:
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          AWS_REGION: ${{ inputs.aws_region }}
         run: |
-          aws eks update-kubeconfig --name "${{ inputs.cluster_name }}" --region ${{ inputs.aws_region }}
+          aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${AWS_REGION}"
           kubectl cluster-info
 
       # -------------------------------------------------------------------------
@@ -141,12 +144,14 @@ jobs:
       - name: Helm Rollback
         id: rollback
         if: inputs.deployment_target == 'eks' && inputs.helm_release_name != ''
+        env:
+          HELM_RELEASE_NAME: ${{ inputs.helm_release_name }}
+          NAMESPACE: ${{ inputs.namespace }}
+          REVISION: ${{ inputs.revision }}
         run: |
-          echo "Rolling back Helm release: ${{ inputs.helm_release_name }}"
+          echo "Rolling back Helm release: ${HELM_RELEASE_NAME}"
           
-          NAMESPACE="${{ inputs.namespace }}"
-          RELEASE="${{ inputs.helm_release_name }}"
-          REVISION="${{ inputs.revision }}"
+          RELEASE="${HELM_RELEASE_NAME}"
           
           # Get current revision
           CURRENT=$(helm history "$RELEASE" -n "$NAMESPACE" -o json | jq -r '.[-1].revision')
@@ -182,10 +187,11 @@ jobs:
       # -------------------------------------------------------------------------
       - name: Kubernetes Rollback
         if: inputs.deployment_target == 'eks' && inputs.helm_release_name == ''
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
         run: |
           echo "Rolling back Kubernetes deployment"
           
-          NAMESPACE="${{ inputs.namespace }}"
           
           # Get deployments in namespace
           DEPLOYMENTS=$(kubectl get deployments -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}')
@@ -210,10 +216,12 @@ jobs:
       - name: EC2 Rollback
         id: ec2_rollback
         if: inputs.deployment_target == 'ec2'
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           echo "Preparing EC2 rollback..."
           
-          PARAM_NAME="/deployments/${{ inputs.environment }}/ec2/previous_image"
+          PARAM_NAME="/deployments/${ENVIRONMENT}/ec2/previous_image"
           
           echo "Retrieving previous image from: $PARAM_NAME"
           
@@ -242,12 +250,16 @@ jobs:
       - name: ECS Rollback
         id: ecs_rollback
         if: inputs.deployment_target == 'ecs'
+        env:
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          SERVICE_NAME: ${{ inputs.service_name }}
+          TASK_DEFINITION_FAMILY: ${{ inputs.task_definition_family }}
         run: |
           echo "Rolling back ECS service..."
           
-          CLUSTER="${{ inputs.cluster_name }}"
-          SERVICE="${{ inputs.service_name }}"
-          TASK_FAMILY="${{ inputs.task_definition_family }}"
+          CLUSTER="${CLUSTER_NAME}"
+          SERVICE="${SERVICE_NAME}"
+          TASK_FAMILY="${TASK_DEFINITION_FAMILY}"
           
           if [[ -z "$CLUSTER" || -z "$SERVICE" || -z "$TASK_FAMILY" ]]; then
             echo "::error::ECS rollback requires cluster_name, service_name, and task_definition_family"
@@ -306,11 +318,15 @@ jobs:
       - name: Set Result
         id: result
         if: always()
+        env:
+          STEP_ROLLBACK_STATUS: ${{ steps.rollback.outputs.status }}
+          STEP_ECS_ROLLBACK_STATUS: ${{ steps.ecs_rollback.outputs.status }}
+          STEP_EC2_ROLLBACK_STATUS: ${{ steps.ec2_rollback.outputs.status }}
         run: |
           # Check all rollback step outputs
-          if [[ "${{ steps.rollback.outputs.status }}" == "success" ]] || \
-             [[ "${{ steps.ecs_rollback.outputs.status }}" == "success" ]] || \
-             [[ "${{ steps.ec2_rollback.outputs.status }}" == "success" ]]; then
+          if [[ "${STEP_ROLLBACK_STATUS}" == "success" ]] || \
+             [[ "${STEP_ECS_ROLLBACK_STATUS}" == "success" ]] || \
+             [[ "${STEP_EC2_ROLLBACK_STATUS}" == "success" ]]; then
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "status=failed" >> $GITHUB_OUTPUT
@@ -318,19 +334,26 @@ jobs:
 
       - name: Generate Summary
         if: always()
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          DEPLOYMENT_TARGET: ${{ inputs.deployment_target }}
+          NAMESPACE: ${{ inputs.namespace }}
+          HELM_RELEASE_NAME: ${{ inputs.helm_release_name }}
+          STEP_ROLLBACK_REVISION: ${{ steps.rollback.outputs.revision }}
+          STEP_RESULT_STATUS: ${{ steps.result.outputs.status }}
         run: |
           echo "## Rollback Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Target | ${{ inputs.deployment_target }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Namespace | ${{ inputs.namespace }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Helm Release | ${{ inputs.helm_release_name }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Rolled Back To | ${{ steps.rollback.outputs.revision }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${ENVIRONMENT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Target | ${DEPLOYMENT_TARGET} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Namespace | ${NAMESPACE} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Helm Release | ${HELM_RELEASE_NAME} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Rolled Back To | ${STEP_ROLLBACK_REVISION} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [[ "${{ steps.result.outputs.status }}" == "success" ]]; then
+          if [[ "${STEP_RESULT_STATUS}" == "success" ]]; then
             echo "### Rollback: **SUCCESS**" >> $GITHUB_STEP_SUMMARY
           else
             echo "### Rollback: **FAILED**" >> $GITHUB_STEP_SUMMARY

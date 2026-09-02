@@ -18,10 +18,10 @@ on:
         default: ""
 
 permissions:
-  contents: read
-  id-token: write
-  actions: write
-  deployments: write
+  contents: read          # checkout
+  id-token: write         # AWS OIDC
+  actions: read           # artifact / SARIF metadata
+  deployments: write      # GitHub Deployments API
 
 jobs:
   deploy:
@@ -33,7 +33,7 @@ jobs:
       # Use digest-based URI if provided (immutable), otherwise use tag-based URI
       image_uri: >-
         ${{ github.event.inputs.image_digest != '' 
-          && format('distributor-venue-authorized-techniques.trycloudflare.com/docker-hosted/demo-maven-app@{0}', github.event.inputs.image_digest)
-          || format('distributor-venue-authorized-techniques.trycloudflare.com/docker-hosted/demo-maven-app:{0}', github.event.inputs.image_tag)
+          && format('nexus-docker.example.com/docker-hosted/demo-maven-app@{0}', github.event.inputs.image_digest)
+          || format('nexus-docker.example.com/docker-hosted/demo-maven-app:{0}', github.event.inputs.image_tag)
         }}
       config_path: "devx-config.yaml"

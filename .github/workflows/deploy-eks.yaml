@@ -162,20 +162,23 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4.0.2
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ inputs.role_to_assume }}
           aws-region: ${{ inputs.aws_region }}
 
       - name: Setup kubectl
+        env:
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          AWS_REGION: ${{ inputs.aws_region }}
         run: |
-          echo "🔧 Configuring kubectl for EKS cluster: ${{ inputs.cluster_name }}"
+          echo "🔧 Configuring kubectl for EKS cluster: ${CLUSTER_NAME}"
           aws eks update-kubeconfig \
-            --name "${{ inputs.cluster_name }}" \
-            --region ${{ inputs.aws_region }}
+            --name "${CLUSTER_NAME}" \
+            --region "${AWS_REGION}"
           
           # Verify connectivity
           kubectl cluster-info || {
@@ -186,149 +189,160 @@ jobs:
           echo "✅ Connected to cluster"
           
       - name: Verify Image Pull Secret
+        env:
+          IMAGE_PULL_SECRET: ${{ inputs.image_pull_secret }}
+          NAMESPACE: ${{ inputs.namespace }}
         run: |
-          SECRET_NAME="${{ inputs.image_pull_secret }}"
+          SECRET_NAME="${IMAGE_PULL_SECRET}"
           echo "🔍 Verifying image pull secret: $SECRET_NAME"
-          if ! kubectl get secret "$SECRET_NAME" -n "${{ inputs.namespace }}" > /dev/null 2>&1; then
-            echo "::warning::Image pull secret '$SECRET_NAME' not found in namespace '${{ inputs.namespace }}'"
+          if ! kubectl get secret "$SECRET_NAME" -n "${NAMESPACE}" > /dev/null 2>&1; then
+            echo "::warning::Image pull secret '$SECRET_NAME' not found in namespace '${NAMESPACE}'"
             echo "::warning::Deployment might fail with ImagePullBackOff/401 Unauthorized"
           else
             echo "✅ Image pull secret found"
           fi
 
       - name: Setup Helm
-        uses: azure/setup-helm@v3
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: '3.14.0'
 
       - name: Validate Helm Chart
+        env:
+          HELM_CHART_PATH: ${{ inputs.helm_chart_path }}
         run: |
-          echo "🔍 Validating Helm chart: ${{ inputs.helm_chart_path }}"
+          echo "🔍 Validating Helm chart: ${HELM_CHART_PATH}"
           
-          if [[ ! -d "${{ inputs.helm_chart_path }}" ]]; then
-            echo "::error::Helm chart not found: ${{ inputs.helm_chart_path }}"
+          if [[ ! -d "${HELM_CHART_PATH}" ]]; then
+            echo "::error::Helm chart not found: ${HELM_CHART_PATH}"
             exit 1
           fi
           
-          helm lint "${{ inputs.helm_chart_path }}" || {
+          helm lint "${HELM_CHART_PATH}" || {
             echo "::error::Helm lint failed"
             exit 1
           }
           
           echo "✅ Helm chart validation passed"
 
-      - name: Prepare Helm Command
-        id: prepare
-        run: |
-          CHART="${{ inputs.helm_chart_path }}"
-          RELEASE="${{ inputs.helm_release_name }}"
-          NAMESPACE="${{ inputs.namespace }}"
-          IMAGE="${{ inputs.image_uri }}"
-          
-          # Extract image repository and tag
-          IMAGE_REPO=$(echo "$IMAGE" | cut -d: -f1)
-          IMAGE_TAG=$(echo "$IMAGE" | cut -d: -f2)
-          
-          # Build base command
-          CMD="helm upgrade --install $RELEASE $CHART"
-          CMD="$CMD --namespace $NAMESPACE"
-          
-          # Namespace creation
-          if [[ "${{ inputs.create_namespace }}" == "true" ]]; then
-            CMD="$CMD --create-namespace"
-          fi
-          
-          # Values file
-          if [[ -n "${{ inputs.helm_values_file }}" && -f "${{ inputs.helm_values_file }}" ]]; then
-            CMD="$CMD -f ${{ inputs.helm_values_file }}"
-          fi
-          
-          # Image settings
-          CMD="$CMD --set image.repository=$IMAGE_REPO"
-          CMD="$CMD --set image.tag=$IMAGE_TAG"
-          
-          # Additional set values
-          if [[ -n "${{ inputs.helm_set_values }}" ]]; then
-            IFS=',' read -ra VALUES <<< "${{ inputs.helm_set_values }}"
-            for val in "${VALUES[@]}"; do
-              CMD="$CMD --set $val"
-            done
-          fi
-          
-          # Options
-          CMD="$CMD --timeout ${{ inputs.timeout }}"
-          CMD="$CMD --wait"
-          
-          if [[ "${{ inputs.atomic }}" == "true" ]]; then
-            CMD="$CMD --atomic"
-          fi
-          
-          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
-            CMD="$CMD --dry-run"
-          fi
-          
-          echo "command=$CMD" >> $GITHUB_OUTPUT
-          echo "📋 Helm command prepared"
-
+      # Building the invocation as an argv array (rather than assembling a
+      # command string and re-parsing it) keeps every value a single argument,
+      # so a chart path or --set value can never be read as shell syntax.
       - name: Deploy with Helm
         id: helm_deploy
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          CHART: ${{ inputs.helm_chart_path }}
+          RELEASE: ${{ inputs.helm_release_name }}
+          NAMESPACE: ${{ inputs.namespace }}
+          IMAGE_URI: ${{ inputs.image_uri }}
+          CREATE_NAMESPACE: ${{ inputs.create_namespace }}
+          VALUES_FILE: ${{ inputs.helm_values_file }}
+          SET_VALUES: ${{ inputs.helm_set_values }}
+          TIMEOUT: ${{ inputs.timeout }}
+          ATOMIC: ${{ inputs.atomic }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          echo "🚀 Deploying to EKS..."
-          echo "Environment: ${{ inputs.environment }}"
-          echo "Cluster: ${{ inputs.cluster_name }}"
-          echo "Namespace: ${{ inputs.namespace }}"
-          echo ""
-          
-          # Execute deployment
-          set -o pipefail
-          ${{ steps.prepare.outputs.command }} 2>&1 | tee deploy-output.txt
-          DEPLOY_EXIT=$?
-          
+          set -uo pipefail
+
+          echo "Deploying to EKS"
+          echo "  Environment: $ENVIRONMENT"
+          echo "  Cluster:     $CLUSTER_NAME"
+          echo "  Namespace:   $NAMESPACE"
+
+          # Split on the LAST separator so a registry with an explicit port
+          # (host:5000/img:tag) and digest references both parse correctly.
+          if [[ "$IMAGE_URI" == *"@"* ]]; then
+            IMAGE_REPO="${IMAGE_URI%@*}"
+            IMAGE_TAG="${IMAGE_URI##*@}"
+          else
+            IMAGE_REPO="${IMAGE_URI%:*}"
+            IMAGE_TAG="${IMAGE_URI##*:}"
+            if [[ "$IMAGE_REPO" == "$IMAGE_URI" ]]; then
+              echo "::error::image_uri must include a tag or digest: $IMAGE_URI"
+              exit 1
+            fi
+          fi
+          echo "  Repository:  $IMAGE_REPO"
+          echo "  Tag:         $IMAGE_TAG"
+
+          ARGS=(upgrade --install "$RELEASE" "$CHART"
+                --namespace "$NAMESPACE"
+                --set "image.repository=$IMAGE_REPO"
+                --set "image.tag=$IMAGE_TAG"
+                --timeout "$TIMEOUT" --wait)
+
+          [[ "$CREATE_NAMESPACE" == "true" ]] && ARGS+=(--create-namespace)
+          [[ "$ATOMIC"           == "true" ]] && ARGS+=(--atomic)
+          [[ "$DRY_RUN"          == "true" ]] && ARGS+=(--dry-run)
+
+          if [[ -n "$VALUES_FILE" ]]; then
+            if [[ -f "$VALUES_FILE" ]]; then
+              ARGS+=(--values "$VALUES_FILE")
+            else
+              echo "::warning::helm_values_file '$VALUES_FILE' not found; ignoring."
+            fi
+          fi
+
+          if [[ -n "$SET_VALUES" ]]; then
+            IFS=',' read -ra VALUES <<< "$SET_VALUES"
+            for val in "${VALUES[@]}"; do
+              [[ -n "$val" ]] && ARGS+=(--set "$val")
+            done
+          fi
+
+          echo "Executing: helm ${ARGS[*]}"
+          helm "${ARGS[@]}" 2>&1 | tee deploy-output.txt
+          DEPLOY_EXIT=${PIPESTATUS[0]}
+
           if [[ $DEPLOY_EXIT -ne 0 ]]; then
             echo "::error::Helm deployment failed"
-            
+
             echo "--- POD DIAGNOSTICS (Post-Failure) ---"
-            kubectl get pods -n "${{ inputs.namespace }}" -l "app.kubernetes.io/instance=${{ inputs.helm_release_name }}" || true
-            
+            kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE" || true
+
             echo "--- RECENT EVENTS ---"
-            kubectl get events -n "${{ inputs.namespace }}" --sort-by='.lastTimestamp' | tail -20 || true
-            
-            echo "status=failed" >> $GITHUB_OUTPUT
+            kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' | tail -20 || true
+
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
-          # Get revision
-          REVISION=$(helm history "${{ inputs.helm_release_name }}" -n "${{ inputs.namespace }}" -o json | jq -r '.[-1].revision')
-          echo "revision=$REVISION" >> $GITHUB_OUTPUT
-          
-          # Get manifest summary
-          MANIFEST=$(helm get manifest "${{ inputs.helm_release_name }}" -n "${{ inputs.namespace }}" | grep "kind:" | sort | uniq -c || echo "N/A")
-          echo "manifest<<EOF" >> $GITHUB_OUTPUT
-          echo "$MANIFEST" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          
-          echo "status=success" >> $GITHUB_OUTPUT
-          echo "✅ Deployment completed (revision: $REVISION)"
+
+          REVISION=$(helm history "$RELEASE" -n "$NAMESPACE" -o json | jq -r '.[-1].revision')
+          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
+
+          MANIFEST=$(helm get manifest "$RELEASE" -n "$NAMESPACE" | grep "kind:" | sort | uniq -c || echo "N/A")
+          {
+            echo "manifest<<MANIFEST_EOF"
+            echo "$MANIFEST"
+            echo "MANIFEST_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "status=success" >> "$GITHUB_OUTPUT"
+          echo "Deployment completed (revision: $REVISION)"
 
       - name: Verify Deployment
         if: inputs.dry_run != true
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+          HELM_RELEASE_NAME: ${{ inputs.helm_release_name }}
         run: |
           echo "🔍 Verifying deployment..."
           
-          NAMESPACE="${{ inputs.namespace }}"
           
           # Get pods
           echo "Pod Status:"
-          kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${{ inputs.helm_release_name }}" --no-headers
+          kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${HELM_RELEASE_NAME}" --no-headers
           
           # Get services
           echo ""
           echo "Services:"
-          kubectl get svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${{ inputs.helm_release_name }}" --no-headers
+          kubectl get svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${HELM_RELEASE_NAME}" --no-headers
           
           # Wait for pods to be ready
           kubectl wait --for=condition=Ready pods \
-            -l "app.kubernetes.io/instance=${{ inputs.helm_release_name }}" \
+            -l "app.kubernetes.io/instance=${HELM_RELEASE_NAME}" \
             -n "$NAMESPACE" \
             --timeout=5m || {
             echo "::warning::Some pods may not be ready"
@@ -337,8 +351,10 @@ jobs:
       - name: Set Result
         id: result
         if: always()
+        env:
+          STEP_HELM_DEPLOY_STATUS: ${{ steps.helm_deploy.outputs.status }}
         run: |
-          if [[ "${{ steps.helm_deploy.outputs.status }}" == "success" ]]; then
+          if [[ "${STEP_HELM_DEPLOY_STATUS}" == "success" ]]; then
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "status=failed" >> $GITHUB_OUTPUT
@@ -346,16 +362,21 @@ jobs:
 
       - name: Generate Deployment URL
         id: deploy_url
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+          HELM_RELEASE_NAME: ${{ inputs.helm_release_name }}
+          INGRESS_DOMAIN: ${{ inputs.ingress_domain }}
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           # Try to get host from ingress rules first
-          INGRESS_HOST=$(kubectl get ingress -n "${{ inputs.namespace }}" \
-            -l "app.kubernetes.io/instance=${{ inputs.helm_release_name }}" \
+          INGRESS_HOST=$(kubectl get ingress -n "${NAMESPACE}" \
+            -l "app.kubernetes.io/instance=${HELM_RELEASE_NAME}" \
             -o jsonpath='{.items[0].spec.rules[0].host}' 2>/dev/null || echo "")
           
           # If no host, try to get ALB DNS name from status
           if [[ -z "$INGRESS_HOST" ]]; then
-             INGRESS_ALB=$(kubectl get ingress -n "${{ inputs.namespace }}" \
-              -l "app.kubernetes.io/instance=${{ inputs.helm_release_name }}" \
+             INGRESS_ALB=$(kubectl get ingress -n "${NAMESPACE}" \
+              -l "app.kubernetes.io/instance=${HELM_RELEASE_NAME}" \
               -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
              
              if [[ -n "$INGRESS_ALB" ]]; then
@@ -366,14 +387,24 @@ jobs:
 
           if [[ -n "$INGRESS_HOST" ]]; then
             echo "url=https://$INGRESS_HOST" >> $GITHUB_OUTPUT
-          elif [[ -n "${{ inputs.ingress_domain }}" ]]; then
-            echo "url=https://${{ inputs.environment }}.${{ inputs.ingress_domain }}" >> $GITHUB_OUTPUT
+          elif [[ -n "${INGRESS_DOMAIN}" ]]; then
+            echo "url=https://${ENVIRONMENT}.${INGRESS_DOMAIN}" >> $GITHUB_OUTPUT
           else
             echo "url=N/A" >> $GITHUB_OUTPUT
           fi
 
       - name: Generate Summary
         if: always()
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          NAMESPACE: ${{ inputs.namespace }}
+          HELM_RELEASE_NAME: ${{ inputs.helm_release_name }}
+          STEP_HELM_DEPLOY_REVISION: ${{ steps.helm_deploy.outputs.revision }}
+          IMAGE_URI: ${{ inputs.image_uri }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          STEP_HELM_DEPLOY_MANIFEST: ${{ steps.helm_deploy.outputs.manifest }}
+          STEP_RESULT_STATUS: ${{ steps.result.outputs.status }}
         run: |
           echo "## 🚀 EKS Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -381,22 +412,22 @@ jobs:
           echo "### Configuration" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Cluster | ${{ inputs.cluster_name }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Namespace | ${{ inputs.namespace }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Helm Release | ${{ inputs.helm_release_name }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Revision | ${{ steps.helm_deploy.outputs.revision }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Image | \`${{ inputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Dry Run | ${{ inputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${ENVIRONMENT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cluster | ${CLUSTER_NAME} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Namespace | ${NAMESPACE} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Helm Release | ${HELM_RELEASE_NAME} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Revision | ${STEP_HELM_DEPLOY_REVISION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${IMAGE_URI}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry Run | ${DRY_RUN} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           echo "### Manifest Summary" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.helm_deploy.outputs.manifest }}" >> $GITHUB_STEP_SUMMARY
+          echo "${STEP_HELM_DEPLOY_MANIFEST}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [[ "${{ steps.result.outputs.status }}" == "success" ]]; then
+          if [[ "${STEP_RESULT_STATUS}" == "success" ]]; then
             echo "### ✅ Deployment: **SUCCESS**" >> $GITHUB_STEP_SUMMARY
           else
             echo "### ❌ Deployment: **FAILED**" >> $GITHUB_STEP_SUMMARY

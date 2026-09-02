@@ -56,7 +56,7 @@ concurrency:
 permissions:
   contents: read
   security-events: write  # SARIF uploads
-  actions: write          # Artifact uploads & SARIF metadata
+  actions: read           # artifact + SARIF metadata
   id-token: write         # AWS OIDC
   packages: write         # GHCR push
   pull-requests: write    # SonarQube PR decoration
@@ -77,25 +77,27 @@ jobs:
     
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Validate config file exists and is valid YAML
       - name: Validate Config File
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
         run: |
-          if [[ ! -f "${{ inputs.config_path }}" ]]; then
-            echo "::error::Config file not found: ${{ inputs.config_path }}"
+          if [[ ! -f "${CONFIG_PATH}" ]]; then
+            echo "::error::Config file not found: ${CONFIG_PATH}"
             echo "::error::Please create a devx-ci.yaml configuration file"
             exit 1
           fi
           
           # Validate YAML syntax
-          yq '.' ${{ inputs.config_path }} > /dev/null || {
-            echo "::error::Invalid YAML syntax in ${{ inputs.config_path }}"
+          yq '.' "${CONFIG_PATH}" > /dev/null || {
+            echo "::error::Invalid YAML syntax in ${CONFIG_PATH}"
             exit 1
           }
           
           # Validate required fields
-          LANGUAGE=$(yq '.project.language' ${{ inputs.config_path }})
+          LANGUAGE=$(yq '.project.language' "${CONFIG_PATH}")
           if [[ "$LANGUAGE" == "null" || -z "$LANGUAGE" ]]; then
             echo "::error::Missing required field: project.language"
             echo "::error::Please specify project.language in your config (node, python, or maven)"
@@ -114,31 +116,36 @@ jobs:
       # Parse config and set as output
       - name: Parse CI Config
         id: parse
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
         run: |
           echo "config<<EOF" >> $GITHUB_OUTPUT
-          yq -o=json ${{ inputs.config_path }} >> $GITHUB_OUTPUT
+          yq -o=json "${CONFIG_PATH}" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       # Extract language for routing
       - name: Extract Routing Info
         id: extract
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+          GH_RUN_ID: ${{ github.run_id }}
         run: |
-          LANGUAGE=$(yq '.project.language' ${{ inputs.config_path }})
+          LANGUAGE=$(yq '.project.language' "${CONFIG_PATH}")
           echo "language=$LANGUAGE" >> $GITHUB_OUTPUT
           echo "📋 Detected language: $LANGUAGE"
           
           # Detect SAST tool (default: semgrep)
-          SAST_TOOL=$(yq '.security.sast.tool // "semgrep"' ${{ inputs.config_path }})
+          SAST_TOOL=$(yq '.security.sast.tool // "semgrep"' "${CONFIG_PATH}")
           echo "sast_tool=$SAST_TOOL" >> $GITHUB_OUTPUT
           echo "🔍 SAST tool: $SAST_TOOL"
 
           # Determine expected artifact name based on language
           if [[ "$LANGUAGE" == "maven" ]]; then
-            ARTIFACT_NAME="maven-build-artifacts-${{ github.run_id }}"
+            ARTIFACT_NAME="maven-build-artifacts-${GH_RUN_ID}"
           elif [[ "$LANGUAGE" == "node" ]]; then
-            ARTIFACT_NAME="node-build-artifacts-${{ github.run_id }}"
+            ARTIFACT_NAME="node-build-artifacts-${GH_RUN_ID}"
           elif [[ "$LANGUAGE" == "python" ]]; then
-            ARTIFACT_NAME="python-build-artifacts-${{ github.run_id }}"
+            ARTIFACT_NAME="python-build-artifacts-${GH_RUN_ID}"
           else
             ARTIFACT_NAME=""
           fi
@@ -155,7 +162,7 @@ jobs:
     if: |
       fromJson(needs.load-config.outputs.config).security.sast.enabled == true &&
       needs.load-config.outputs.sast_tool == 'semgrep'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/sast-semgrep.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/sast-semgrep.yaml@v1
     with:
       scan_path: ${{ fromJson(needs.load-config.outputs.config).security.sast.scan_path || '.' }}
       exclude_paths: ${{ fromJson(needs.load-config.outputs.config).security.sast.exclude_paths || '' }}
@@ -168,7 +175,7 @@ jobs:
     if: |
       fromJson(needs.load-config.outputs.config).security.sast.enabled == true &&
       needs.load-config.outputs.sast_tool == 'sonarqube'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/sast-sonarqube.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/sast-sonarqube.yaml@v1
     secrets:
       sonar_token: ${{ secrets.sonar_token }}
     with:
@@ -182,7 +189,7 @@ jobs:
   iac:
     needs: load-config
     if: fromJson(needs.load-config.outputs.config).security.iac.enabled == true
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/iac-scan.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/iac-scan.yaml@v1
     with:
       working_directory: ${{ fromJson(needs.load-config.outputs.config).security.iac.working_directory || '.' }}
       frameworks: ${{ fromJson(needs.load-config.outputs.config).security.iac.frameworks || '' }}
@@ -201,7 +208,7 @@ jobs:
       fromJson(needs.load-config.outputs.config).build.enabled != false &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/node-build.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/node-build.yaml@v1
     secrets:
       NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
       NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
@@ -231,7 +238,7 @@ jobs:
       fromJson(needs.load-config.outputs.config).build.enabled != false &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/python-build.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/python-build.yaml@v1
     secrets:
       NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
       NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
@@ -260,7 +267,7 @@ jobs:
       fromJson(needs.load-config.outputs.config).build.enabled != false &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/maven-build.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/maven-build.yaml@v1
     secrets:
       NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
       NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
@@ -292,7 +299,7 @@ jobs:
       !contains(needs.*.result, 'failure') && 
       !contains(needs.*.result, 'cancelled')
     
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/docker-build.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/docker-build.yaml@v1
     secrets:
       registry_username: ${{ secrets.registry_username }}
       registry_password: ${{ secrets.registry_password }}
@@ -334,7 +341,7 @@ jobs:
       always() &&
       fromJson(needs.load-config.outputs.config).security.trivy.enabled == true &&
       needs.docker.result == 'success'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/trivy-scan.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/trivy-scan.yaml@v1
     secrets:
       registry_username: ${{ secrets.NEXUS_USERNAME }}
       registry_password: ${{ secrets.NEXUS_PASSWORD }}
@@ -362,7 +369,7 @@ jobs:
       fromJson(needs.load-config.outputs.config).security.sbom.enabled == true &&
       needs.docker.result == 'success' &&
       (needs.trivy.result == 'success' || needs.trivy.result == 'skipped')
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/sbom-generate.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/sbom-generate.yaml@v1
     secrets:
       registry_username: ${{ secrets.NEXUS_USERNAME }}
       registry_password: ${{ secrets.NEXUS_PASSWORD }}
@@ -386,7 +393,7 @@ jobs:
       always() &&
       fromJson(needs.load-config.outputs.config).security.sbom_scan.enabled == true &&
       needs.sbom.result == 'success'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/sbom-scan.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/sbom-scan.yaml@v1
     with:
       sbom_artifact_name: ${{ needs.sbom.outputs.sbom_artifact_name }}
       severity_threshold: ${{ fromJson(needs.load-config.outputs.config).security.sbom_scan.severity || 'medium' }}
@@ -400,7 +407,13 @@ jobs:
     if: |
       github.event_name == 'pull_request' &&
       inputs.auto_merge == true
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/auto-merge.yaml@v1
+    # Scoped to this job only, so the rest of the pipeline keeps contents: read.
+    # Still capped by whatever the calling repository's workflow granted --
+    # a caller with contents: read will see this job fail, by design.
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/auto-merge.yaml@v1
     secrets:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -415,17 +428,39 @@ jobs:
     
     steps:
       - name: Generate Pipeline Summary
+        env:
+          NEED_LOAD_CONFIG_LANGUAGE: ${{ needs.load-config.outputs.language }}
+          NEED_LOAD_CONFIG_SAST_TOOL: ${{ needs.load-config.outputs.sast_tool }}
+          GH_SHA: ${{ github.sha }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          NEED_LOAD_CONFIG_RESULT: ${{ needs.load-config.result }}
+          NEED_SAST_SEMGREP_RESULT: ${{ needs.sast-semgrep.result }}
+          NEED_SAST_SONARQUBE_RESULT: ${{ needs.sast-sonarqube.result }}
+          NEED_IAC_RESULT: ${{ needs.iac.result }}
+          NEED_BUILD_NODE_RESULT: ${{ needs.build-node.result }}
+          NEED_BUILD_PYTHON_RESULT: ${{ needs.build-python.result }}
+          NEED_BUILD_MAVEN_RESULT: ${{ needs.build-maven.result }}
+          NEED_DOCKER_RESULT: ${{ needs.docker.result }}
+          NEED_TRIVY_RESULT: ${{ needs.trivy.result }}
+          NEED_SBOM_RESULT: ${{ needs.sbom.result }}
+          NEED_SBOM_SCAN_RESULT: ${{ needs.sbom-scan.result }}
+          EXPR: ${{ contains(needs.*.result, 'failure') }}
+          EXPR_2: ${{ contains(needs.*.result, 'cancelled') }}
+          NEED_BUILD_MAVEN_NEXUS_PATH: ${{ needs.build-maven.outputs.nexus_path }}
+          NEED_BUILD_MAVEN_ARTIFACT_FILE: ${{ needs.build-maven.outputs.artifact_file }}
+          NEED_DOCKER_IMAGE_URI: ${{ needs.docker.outputs.image_uri }}
         run: |
           echo "## 🔐 CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Configuration Info
           echo "### 📋 Configuration" >> $GITHUB_STEP_SUMMARY
-          echo "- **Language:** ${{ needs.load-config.outputs.language }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **SAST Tool:** ${{ needs.load-config.outputs.sast_tool }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Triggered by:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Language:** ${NEED_LOAD_CONFIG_LANGUAGE}" >> $GITHUB_STEP_SUMMARY
+          echo "- **SAST Tool:** ${NEED_LOAD_CONFIG_SAST_TOOL}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${GH_SHA}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** \`${GH_REF_NAME}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** ${GH_EVENT_NAME}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Pipeline Stages
@@ -433,30 +468,30 @@ jobs:
           echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| **Pre-Build** | |" >> $GITHUB_STEP_SUMMARY
-          echo "| ├─ Config Validation | ${{ needs.load-config.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ├─ SAST (Semgrep) | ${{ needs.sast-semgrep.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ├─ SAST (SonarQube) | ${{ needs.sast-sonarqube.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| └─ IaC Scan | ${{ needs.iac.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ├─ Config Validation | ${NEED_LOAD_CONFIG_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ├─ SAST (Semgrep) | ${NEED_SAST_SEMGREP_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ├─ SAST (SonarQube) | ${NEED_SAST_SONARQUBE_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| └─ IaC Scan | ${NEED_IAC_RESULT} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Build** | |" >> $GITHUB_STEP_SUMMARY
-          echo "| ├─ Node.js Build | ${{ needs.build-node.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ├─ Python Build | ${{ needs.build-python.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| └─ Maven Build | ${{ needs.build-maven.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ├─ Node.js Build | ${NEED_BUILD_NODE_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ├─ Python Build | ${NEED_BUILD_PYTHON_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| └─ Maven Build | ${NEED_BUILD_MAVEN_RESULT} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Artifact Management** | |" >> $GITHUB_STEP_SUMMARY
           
           echo "| **Container** | |" >> $GITHUB_STEP_SUMMARY
-          echo "| └─ Docker Build | ${{ needs.docker.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| └─ Docker Build | ${NEED_DOCKER_RESULT} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Post-Build Security (Sequential)** | |" >> $GITHUB_STEP_SUMMARY
-          echo "| ├─ 1️⃣ Trivy Scan | ${{ needs.trivy.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ├─ 2️⃣ SBOM Generation | ${{ needs.sbom.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| └─ 3️⃣ SBOM CVE Scan | ${{ needs.sbom-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ├─ 1️⃣ Trivy Scan | ${NEED_TRIVY_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ├─ 2️⃣ SBOM Generation | ${NEED_SBOM_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| └─ 3️⃣ SBOM CVE Scan | ${NEED_SBOM_SCAN_RESULT} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Overall Status
-          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+          if [[ "${EXPR}" == "true" ]]; then
             echo "### ❌ Pipeline Status: **FAILED**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "One or more stages failed. Please review the logs above." >> $GITHUB_STEP_SUMMARY
-          elif [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+          elif [[ "${EXPR_2}" == "true" ]]; then
             echo "### ⚠️ Pipeline Status: **CANCELLED**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Pipeline was cancelled. This may be due to a newer commit being pushed." >> $GITHUB_STEP_SUMMARY
@@ -469,23 +504,25 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Nexus Info (if used)
-          if [[ "${{ needs.build-maven.result }}" == "success" ]]; then
+          if [[ "${NEED_BUILD_MAVEN_RESULT}" == "success" ]]; then
             echo "### 📦 Nexus Upload (Maven)" >> $GITHUB_STEP_SUMMARY
-            echo "- **Path:** ${{ needs.build-maven.outputs.nexus_path }}" >> $GITHUB_STEP_SUMMARY
-            echo "- **Artifact:** ${{ needs.build-maven.outputs.artifact_file }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Path:** ${NEED_BUILD_MAVEN_NEXUS_PATH}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Artifact:** ${NEED_BUILD_MAVEN_ARTIFACT_FILE}" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
           
           # Docker Image Info (if built)
-          if [[ "${{ needs.docker.result }}" == "success" ]]; then
+          if [[ "${NEED_DOCKER_RESULT}" == "success" ]]; then
             echo "### 🐳 Container Image" >> $GITHUB_STEP_SUMMARY
-            echo "Image URI: \`${{ needs.docker.outputs.image_uri }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "Image URI: \`${NEED_DOCKER_IMAGE_URI}\`" >> $GITHUB_STEP_SUMMARY
           fi
 
       # Set final job status
       - name: Evaluate Final Status
+        env:
+          EXPR: ${{ contains(needs.*.result, 'failure') }}
         run: |
-          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+          if [[ "${EXPR}" == "true" ]]; then
             echo "::error::Pipeline failed - one or more stages reported failure"
             exit 1
           fi

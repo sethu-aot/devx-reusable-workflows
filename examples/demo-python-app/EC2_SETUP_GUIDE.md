@@ -25,7 +25,7 @@ scp -i <your-key.pem> docker-compose.yaml ec2-user@<instance-ip>:/app/
 ### 3. Authenticate Docker with Nexus
 ```bash
 ssh -i <your-key.pem> ec2-user@<instance-ip>
-docker login distributor-venue-authorized-techniques.trycloudflare.com
+docker login nexus-docker.example.com
 # Enter your Nexus credentials when prompted
 ```
 

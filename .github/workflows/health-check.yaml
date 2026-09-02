@@ -159,21 +159,26 @@ jobs:
 
       - name: Configure AWS Credentials
         if: inputs.role_to_assume != ''
-        uses: aws-actions/configure-aws-credentials@v4.0.2
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ inputs.role_to_assume }}
           aws-region: ${{ inputs.aws_region }}
 
       - name: Setup EKS kubectl
         if: inputs.check_type == 'k8s' && inputs.cluster_name != ''
+        env:
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          AWS_REGION: ${{ inputs.aws_region }}
         run: |
-          aws eks update-kubeconfig --name "${{ inputs.cluster_name }}" --region ${{ inputs.aws_region }}
+          aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${AWS_REGION}"
           kubectl cluster-info
 
       - name: Initial Delay
+        env:
+          INITIAL_DELAY: ${{ inputs.initial_delay }}
         run: |
-          echo "Waiting ${{ inputs.initial_delay }} seconds before health check..."
-          sleep ${{ inputs.initial_delay }}
+          echo "Waiting ${INITIAL_DELAY} seconds before health check..."
+          sleep "${INITIAL_DELAY}"
 
       # -------------------------------------------------------------------------
       # KUBERNETES HEALTH CHECK
@@ -181,13 +186,17 @@ jobs:
       - name: Kubernetes Health Check
         id: k8s_check
         if: inputs.check_type == 'k8s'
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+          DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
+          RETRIES: ${{ inputs.retries }}
+          RETRY_INTERVAL: ${{ inputs.retry_interval }}
+          TIMEOUT: ${{ inputs.timeout }}
         run: |
           echo "Checking Kubernetes deployment health..."
           
-          NAMESPACE="${{ inputs.namespace }}"
-          DEPLOYMENT="${{ inputs.deployment_name }}"
-          MAX_RETRIES=${{ inputs.retries }}
-          RETRY_INTERVAL=${{ inputs.retry_interval }}
+          DEPLOYMENT="${DEPLOYMENT_NAME}"
+          MAX_RETRIES="${RETRIES}"
           
           # If deployment name not provided, find deployments in namespace
           if [[ -z "$DEPLOYMENT" ]]; then
@@ -207,7 +216,7 @@ jobs:
           for ((i=1; i<=MAX_RETRIES; i++)); do
             echo "Attempt $i/$MAX_RETRIES: Checking deployment status..."
             
-            ROLLOUT_STATUS=$(kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout=${{ inputs.timeout }}s 2>&1) && {
+            ROLLOUT_STATUS=$(kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout="${TIMEOUT}"s 2>&1) && {
               echo "Deployment rollout successful"
               
               # Verify pods are ready
@@ -246,8 +255,12 @@ jobs:
               fi
             }
             
-            echo "Deployment not ready, waiting ${RETRY_INTERVAL}s..."
-            sleep $RETRY_INTERVAL
+            # Surface why the rollout has not completed. Without this the
+            # captured kubectl output is discarded and every retry logs the
+            # same uninformative line.
+            echo "Deployment not ready: ${ROLLOUT_STATUS:-no output from kubectl}"
+            echo "Waiting ${RETRY_INTERVAL}s before retrying..."
+            sleep "$RETRY_INTERVAL"
           done
           
           echo "::error::Health check failed after $MAX_RETRIES attempts"
@@ -270,16 +283,25 @@ jobs:
       - name: HTTP Health Check
         id: http_check
         if: inputs.check_type == 'http' || inputs.check_type == 'url'
+        env:
+          HEALTH_URL: ${{ inputs.health_url }}
+          INGRESS_DOMAIN: ${{ inputs.ingress_domain }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          HEALTH_ENDPOINT: ${{ inputs.health_endpoint }}
+          RETRIES: ${{ inputs.retries }}
+          RETRY_INTERVAL: ${{ inputs.retry_interval }}
+          TIMEOUT: ${{ inputs.timeout }}
+          VERIFY_SSL: ${{ inputs.verify_ssl }}
         run: |
           echo "Running HTTP health check..."
           
           # Determine URL
-          if [[ -n "${{ inputs.health_url }}" && "${{ inputs.health_url }}" != "N/A" ]]; then
-            URL="${{ inputs.health_url }}"
+          if [[ -n "${HEALTH_URL}" && "${HEALTH_URL}" != "N/A" ]]; then
+            URL="${HEALTH_URL}"
           else
             # Construct URL from environment
-            if [[ -n "${{ inputs.ingress_domain }}" ]]; then
-              URL="https://${{ inputs.environment }}.${{ inputs.ingress_domain }}${{ inputs.health_endpoint }}"
+            if [[ -n "${INGRESS_DOMAIN}" ]]; then
+              URL="https://${ENVIRONMENT}.${INGRESS_DOMAIN}${HEALTH_ENDPOINT}"
             else
               URL="N/A"
             fi
@@ -287,12 +309,10 @@ jobs:
           
           echo "Target: $URL"
           
-          MAX_RETRIES=${{ inputs.retries }}
-          RETRY_INTERVAL=${{ inputs.retry_interval }}
-          TIMEOUT=${{ inputs.timeout }}
+          MAX_RETRIES="${RETRIES}"
           
           # SSL verification flag (disable for dev with self-signed certs)
-          if [[ "${{ inputs.verify_ssl }}" == "false" ]]; then
+          if [[ "${VERIFY_SSL}" == "false" ]]; then
             SSL_FLAG="-k"
             echo "SSL verification disabled"
           else
@@ -355,22 +375,29 @@ jobs:
       - name: Set Result
         id: result
         if: always()
+        env:
+          STEP_K8S_CHECK_STATUS: ${{ steps.k8s_check.outputs.status }}
+          STEP_K8S_CHECK_DETAILS: ${{ steps.k8s_check.outputs.details }}
+          STEP_HTTP_CHECK_STATUS: ${{ steps.http_check.outputs.status }}
+          STEP_HTTP_CHECK_DETAILS: ${{ steps.http_check.outputs.details }}
+          STEP_TCP_CHECK_STATUS: ${{ steps.tcp_check.outputs.status }}
+          STEP_TCP_CHECK_DETAILS: ${{ steps.tcp_check.outputs.details }}
         run: |
           # Aggregate results from all check types
-          if [[ "${{ steps.k8s_check.outputs.status }}" == "healthy" ]]; then
+          if [[ "${STEP_K8S_CHECK_STATUS}" == "healthy" ]]; then
             echo "status=healthy" >> $GITHUB_OUTPUT
             echo "details<<EOF" >> $GITHUB_OUTPUT
-            echo "${{ steps.k8s_check.outputs.details }}" >> $GITHUB_OUTPUT
+            echo "${STEP_K8S_CHECK_DETAILS}" >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
-          elif [[ "${{ steps.http_check.outputs.status }}" == "healthy" ]]; then
+          elif [[ "${STEP_HTTP_CHECK_STATUS}" == "healthy" ]]; then
             echo "status=healthy" >> $GITHUB_OUTPUT
             echo "details<<EOF" >> $GITHUB_OUTPUT
-            echo "${{ steps.http_check.outputs.details }}" >> $GITHUB_OUTPUT
+            echo "${STEP_HTTP_CHECK_DETAILS}" >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
-          elif [[ "${{ steps.tcp_check.outputs.status }}" == "healthy" ]]; then
+          elif [[ "${STEP_TCP_CHECK_STATUS}" == "healthy" ]]; then
             echo "status=healthy" >> $GITHUB_OUTPUT
             echo "details<<EOF" >> $GITHUB_OUTPUT
-            echo "${{ steps.tcp_check.outputs.details }}" >> $GITHUB_OUTPUT
+            echo "${STEP_TCP_CHECK_DETAILS}" >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           else
             echo "status=unhealthy" >> $GITHUB_OUTPUT
@@ -382,14 +409,17 @@ jobs:
         env:
           DETAILS: ${{ steps.result.outputs.details }}
           STATUS: ${{ steps.result.outputs.status }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          CHECK_TYPE: ${{ inputs.check_type }}
+          NAMESPACE: ${{ inputs.namespace }}
         run: |
           echo "## Health Check Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Check Type | ${{ inputs.check_type }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Namespace | ${{ inputs.namespace }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${ENVIRONMENT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Check Type | ${CHECK_TYPE} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Namespace | ${NAMESPACE} |" >> $GITHUB_STEP_SUMMARY
           echo "| Status | **$STATUS** |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           

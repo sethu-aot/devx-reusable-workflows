@@ -87,10 +87,10 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.11'
 
@@ -105,29 +105,35 @@ jobs:
       - name: Run Semgrep SAST
         id: semgrep
         timeout-minutes: 15
+        env:
+          RULESET: ${{ inputs.ruleset }}
+          SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
+          SCAN_PATH: ${{ inputs.scan_path }}
+          EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
+          FAIL_ON_FINDINGS: ${{ inputs.fail_on_findings }}
         run: |
           echo "🔍 Running Semgrep SAST scan..."
-          echo "Config: ${{ inputs.ruleset }}"
-          echo "Severity: ${{ inputs.severity_threshold }}"
-          echo "Scan path: ${{ inputs.scan_path }}"
+          echo "Config: ${RULESET}"
+          echo "Severity: ${SEVERITY_THRESHOLD}"
+          echo "Scan path: ${SCAN_PATH}"
           echo "Working directory: $(pwd)"
           
           # Build exclude flags
           EXCLUDE_FLAGS=""
-          if [ -n "${{ inputs.exclude_paths }}" ]; then
-            IFS=',' read -ra EXCLUDES <<< "${{ inputs.exclude_paths }}"
+          if [ -n "${EXCLUDE_PATHS}" ]; then
+            IFS=',' read -ra EXCLUDES <<< "${EXCLUDE_PATHS}"
             for exclude in "${EXCLUDES[@]}"; do
               exclude=$(echo "$exclude" | xargs)
               if [ -n "$exclude" ]; then
                 EXCLUDE_FLAGS="$EXCLUDE_FLAGS --exclude $exclude"
               fi
             done
-            echo "Excluding: ${{ inputs.exclude_paths }}"
+            echo "Excluding: ${EXCLUDE_PATHS}"
           fi
 
           # Map severity threshold
           SEVERITY_FLAG=""
-          case "${{ inputs.severity_threshold }}" in
+          case "${SEVERITY_THRESHOLD}" in
             ERROR)
               SEVERITY_FLAG="--severity=ERROR"
               ;;
@@ -142,12 +148,12 @@ jobs:
           # Run Semgrep (always generate SARIF, even on error)
           EXIT_CODE=0
           semgrep scan \
-            --config=${{ inputs.ruleset }} \
+            --config="${RULESET}" \
             $SEVERITY_FLAG \
             $EXCLUDE_FLAGS \
             --sarif \
             --output=semgrep.sarif \
-            ${{ inputs.scan_path }} || EXIT_CODE=$?
+            "${SCAN_PATH}" || EXIT_CODE=$?
 
           # Verify SARIF was created
           if [ ! -f "semgrep.sarif" ]; then
@@ -179,15 +185,15 @@ jobs:
           echo ""
           echo "📊 Scan Results:"
           semgrep scan \
-            --config=${{ inputs.ruleset }} \
+            --config="${RULESET}" \
             $SEVERITY_FLAG \
             $EXCLUDE_FLAGS \
-            ${{ inputs.scan_path }} || true
+            "${SCAN_PATH}" || true
 
           # Handle exit code
           if [ $EXIT_CODE -ne 0 ]; then
-            if [ "${{ inputs.fail_on_findings }}" == "true" ]; then
-              echo "::error::❌ Semgrep found security issues (severity: ${{ inputs.severity_threshold }})"
+            if [ "${FAIL_ON_FINDINGS}" == "true" ]; then
+              echo "::error::❌ Semgrep found security issues (severity: ${SEVERITY_THRESHOLD})"
               echo "EXIT_WITH_ERROR=true" >> $GITHUB_ENV
             else
               echo "::warning::⚠️ Semgrep found issues but fail_on_findings is false (audit mode)"
@@ -198,7 +204,7 @@ jobs:
 
       - name: Upload SARIF to Security Tab
         if: inputs.upload_sarif == true && always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           sarif_file: semgrep.sarif
           category: sast-semgrep

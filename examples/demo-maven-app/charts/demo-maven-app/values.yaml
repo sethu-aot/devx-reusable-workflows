@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: chevy-pushing-duties-ladder.trycloudflare.com/docker-hosted/demo-maven-app
+  repository: nexus-docker.example.com/docker-hosted/demo-maven-app
   pullPolicy: Always
   tag: "latest"
 

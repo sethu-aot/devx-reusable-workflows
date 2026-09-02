@@ -1,0 +1,12 @@
+# Every file in this repository is consumed by other repositories in the
+# organisation, so all changes require review from the DevOps owners.
+#
+# Replace @AOT-Technologies/devops with the real team slug, then require
+# "Require review from Code Owners" in the branch protection ruleset for main.
+
+*                       @AOT-Technologies/devops
+
+# The workflow definitions themselves are the product. Guard them specifically
+# so a broad rule change cannot silently loosen review on them.
+/.github/workflows/     @AOT-Technologies/devops
+/.github/scripts/       @AOT-Technologies/devops

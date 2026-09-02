@@ -166,9 +166,15 @@ jobs:
 
     steps:
       - name: Validate Inputs
+        env:
+          IMAGE_URI: ${{ inputs.image_uri }}
+          DEPLOY_METHOD: ${{ inputs.deploy_method }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
         run: |
           # Trim whitespace
-          IMAGE_URI=$(echo "${{ inputs.image_uri }}" | xargs)
+          IMAGE_URI=$(echo "${IMAGE_URI}" | xargs)
           
           # Security: Validate image URI format to prevent injection
           if [[ ! "$IMAGE_URI" =~ ^[a-zA-Z0-9._/:@-]+$ ]]; then
@@ -177,32 +183,32 @@ jobs:
           fi
           
           # Validate deploy method
-          if [[ ! "${{ inputs.deploy_method }}" =~ ^(ssm|ssh)$ ]]; then
-            echo "::error::Invalid deploy_method: ${{ inputs.deploy_method }}"
+          if [[ ! "${DEPLOY_METHOD}" =~ ^(ssm|ssh)$ ]]; then
+            echo "::error::Invalid deploy_method: ${DEPLOY_METHOD}"
             echo "::error::Must be 'ssm' or 'ssh'"
             exit 1
           fi
           
           # If SSH, check that we have SSH key
-          if [[ "${{ inputs.deploy_method }}" == "ssh" ]] && [[ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]]; then
+          if [[ "${DEPLOY_METHOD}" == "ssh" ]] && [[ -z "${SSH_PRIVATE_KEY}" ]]; then
             echo "::warning::SSH method selected but SSH_PRIVATE_KEY secret not set"
           fi
 
           # Registry Credential Presence Check (Non-ECR)
           REGISTRY=$(echo "$IMAGE_URI" | cut -d/ -f1)
           if [[ ! "$REGISTRY" == *".amazonaws.com"* ]] && [[ ! "$REGISTRY" == *".ecr."* ]]; then
-            if [[ -z "${{ secrets.REGISTRY_USERNAME }}" ]] || [[ -z "${{ secrets.REGISTRY_PASSWORD }}" ]]; then
+            if [[ -z "${REGISTRY_USERNAME}" ]] || [[ -z "${REGISTRY_PASSWORD}" ]]; then
               echo "::warning::EC2 module received EMPTY credentials for $REGISTRY"
               echo "::warning::Please check secret inheritance and orchestrator passing."
             else
-              echo "✓ EC2 module received credentials (Length: $(echo -n "${{ secrets.REGISTRY_USERNAME }}" | wc -c) / $(echo -n "${{ secrets.REGISTRY_PASSWORD }}" | wc -c))"
+              echo "✓ EC2 module received credentials (Length: $(echo -n "${REGISTRY_USERNAME}" | wc -c) / $(echo -n "${REGISTRY_PASSWORD}" | wc -c))"
             fi
           fi
           
           echo "Input validation passed"
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4.0.2
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ inputs.role_to_assume }}
           aws-region: ${{ inputs.aws_region }}
@@ -212,25 +218,31 @@ jobs:
 
       - name: Determine Target Instances
         id: targets
+        env:
+          TARGET_TYPE: ${{ inputs.target_type }}
+          INSTANCE_IDS: ${{ inputs.instance_ids }}
+          TARGET_TAG_KEY: ${{ inputs.target_tag_key }}
+          TARGET_TAG_VALUE: ${{ inputs.target_tag_value }}
+          ASG_NAME: ${{ inputs.asg_name }}
+          DEPLOY_METHOD: ${{ inputs.deploy_method }}
         run: |
-          TARGET_TYPE="${{ inputs.target_type }}"
           
           case "$TARGET_TYPE" in
             instance-ids)
-              INSTANCES="${{ inputs.instance_ids }}"
+              INSTANCES="${INSTANCE_IDS}"
               ;;
             tag)
-              echo "Finding instances with tag: ${{ inputs.target_tag_key }}=${{ inputs.target_tag_value }}"
+              echo "Finding instances with tag: ${TARGET_TAG_KEY}=${TARGET_TAG_VALUE}"
               INSTANCES=$(aws ec2 describe-instances \
-                --filters "Name=tag:${{ inputs.target_tag_key }},Values=${{ inputs.target_tag_value }}" \
+                --filters "Name=tag:${TARGET_TAG_KEY},Values=${TARGET_TAG_VALUE}" \
                           "Name=instance-state-name,Values=running" \
                 --query 'Reservations[*].Instances[*].InstanceId' \
                 --output text | tr '\t' ',')
               ;;
             asg)
-              echo "Finding instances in ASG: ${{ inputs.asg_name }}"
+              echo "Finding instances in ASG: ${ASG_NAME}"
               INSTANCES=$(aws autoscaling describe-auto-scaling-groups \
-                --auto-scaling-group-names "${{ inputs.asg_name }}" \
+                --auto-scaling-group-names "${ASG_NAME}" \
                 --query 'AutoScalingGroups[0].Instances[*].InstanceId' \
                 --output text | tr '\t' ',')
               ;;
@@ -271,7 +283,7 @@ jobs:
           echo "public_ips=$IPS" >> $GITHUB_OUTPUT
           
           # Validate SSH Requirements
-          if [[ "${{ inputs.deploy_method }}" == "ssh" ]] && [[ -z "$IPS" ]]; then
+          if [[ "${DEPLOY_METHOD}" == "ssh" ]] && [[ -z "$IPS" ]]; then
             echo "::error::Deploy method is SSH but no Public IPs found for targets"
             exit 1
           fi
@@ -282,23 +294,29 @@ jobs:
       - name: Store Current State
         id: save_state
         continue-on-error: true
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          STEP_TARGETS_INSTANCES: ${{ steps.targets.outputs.instances }}
+          DEPLOY_METHOD: ${{ inputs.deploy_method }}
+          DOCKER_COMPOSE_PATH: ${{ inputs.docker_compose_path }}
+          SERVICE_NAME: ${{ inputs.service_name }}
         run: |
           echo "Saving current state for rollback..."
           
-          ENV="${{ inputs.environment }}"
+          ENV="${ENVIRONMENT}"
           PARAM_NAME="/deployments/$ENV/ec2/previous_image"
           
           # Get first instance ID for querying
-          FIRST_INSTANCE=$(echo "${{ steps.targets.outputs.instances }}" | cut -d',' -f1)
+          FIRST_INSTANCE=$(echo "${STEP_TARGETS_INSTANCES}" | cut -d',' -f1)
           
           CURRENT_IMAGE=""
           
-          if [[ "${{ inputs.deploy_method }}" == "ssm" ]]; then
+          if [[ "${DEPLOY_METHOD}" == "ssm" ]]; then
              echo "Fetching image from $FIRST_INSTANCE via SSM..."
              
              # Command to get image from docker-compose file
              # We use direct grep to avoid dependency on running containers or docker-compose command availability
-             CMD="grep 'image:' ${{ inputs.docker_compose_path }} | grep '${{ inputs.service_name }}' -A 1 | grep 'image:' | awk '{print \$2}' | tr -d '\"'"
+             CMD="grep 'image:' ${DOCKER_COMPOSE_PATH} | grep '${SERVICE_NAME}' -A 1 | grep 'image:' | awk '{print \$2}' | tr -d '\"'"
              
              CURRENT_IMAGE=$(aws ssm send-command \
                --document-name "AWS-RunShellScript" \
@@ -337,10 +355,12 @@ jobs:
           AWS_REGION: ${{ inputs.aws_region }}
           REG_USER: ${{ secrets.REGISTRY_USERNAME }}
           REG_PASS: ${{ secrets.REGISTRY_PASSWORD }}
+          STEP_TARGETS_INSTANCES: ${{ steps.targets.outputs.instances }}
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           echo "Deploying to EC2 instances via SSM..."
           
-          INSTANCES="${{ steps.targets.outputs.instances }}"
+          INSTANCES="${STEP_TARGETS_INSTANCES}"
           
           # Build deployment script with proper variable escaping
           # Using heredoc with single quotes to prevent shell expansion
@@ -429,7 +449,7 @@ jobs:
             --document-name "AWS-RunShellScript" \
             --targets "Key=instanceids,Values=$INSTANCES" \
             --parameters "$SSM_PARAMS" \
-            --comment "Deploy ${{ inputs.environment }}: ${IMAGE_URI##*/}" \
+            --comment "Deploy ${ENVIRONMENT}: ${IMAGE_URI##*/}" \
             --timeout-seconds 600 \
             --output text \
             --query 'Command.CommandId')
@@ -440,7 +460,7 @@ jobs:
           FIRST_INSTANCE=$(echo "$INSTANCES" | cut -d',' -f1)
           echo "Waiting for command to complete on $FIRST_INSTANCE..."
           
-          for i in {1..60}; do
+          for _ in {1..60}; do
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
               --instance-id "$FIRST_INSTANCE" \
@@ -475,9 +495,11 @@ jobs:
       # =========================================================================
       - name: Setup SSH Key
         if: inputs.deploy_method == 'ssh'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          echo "${SSH_PRIVATE_KEY}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           
           # Add target hosts to known_hosts (disable strict checking for automation)
@@ -495,12 +517,13 @@ jobs:
           AWS_REGION: ${{ inputs.aws_region }}
           REG_USER: ${{ secrets.REGISTRY_USERNAME }}
           REG_PASS: ${{ secrets.REGISTRY_PASSWORD }}
+          SSH_USER: ${{ inputs.ssh_user }}
+          SSH_PORT: ${{ inputs.ssh_port }}
+          STEP_TARGETS_PUBLIC_IPS: ${{ steps.targets.outputs.public_ips }}
         run: |
           echo "Deploying to EC2 instances via SSH..."
           
-          SSH_USER="${{ inputs.ssh_user }}"
-          SSH_PORT="${{ inputs.ssh_port }}"
-          PUBLIC_IPS="${{ steps.targets.outputs.public_ips }}"
+          PUBLIC_IPS="${STEP_TARGETS_PUBLIC_IPS}"
           
           # Create deployment script
           cat > /tmp/deploy.sh << 'SCRIPT_END'
@@ -606,22 +629,29 @@ jobs:
       - name: Set Result
         id: result
         if: always()
+        env:
+          STEP_SSM_DEPLOY_STATUS: ${{ steps.ssm_deploy.outputs.status }}
+          STEP_SSH_DEPLOY_STATUS: ${{ steps.ssh_deploy.outputs.status }}
+          INGRESS_DOMAIN: ${{ inputs.ingress_domain }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          STEP_TARGETS_PUBLIC_IPS: ${{ steps.targets.outputs.public_ips }}
+          APP_PORT: ${{ inputs.app_port }}
         run: |
-          if [[ "${{ steps.ssm_deploy.outputs.status }}" == "success" ]] || \
-             [[ "${{ steps.ssh_deploy.outputs.status }}" == "success" ]]; then
+          if [[ "${STEP_SSM_DEPLOY_STATUS}" == "success" ]] || \
+             [[ "${STEP_SSH_DEPLOY_STATUS}" == "success" ]]; then
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "status=failed" >> $GITHUB_OUTPUT
           fi
           
           # Generate URL
-          if [[ -n "${{ inputs.ingress_domain }}" ]]; then
-            echo "url=https://${{ inputs.environment }}.${{ inputs.ingress_domain }}" >> $GITHUB_OUTPUT
+          if [[ -n "${INGRESS_DOMAIN}" ]]; then
+            echo "url=https://${ENVIRONMENT}.${INGRESS_DOMAIN}" >> $GITHUB_OUTPUT
           else
             # Fallback to first public IP if available
-            IP=$(echo "${{ steps.targets.outputs.public_ips }}" | cut -d',' -f1)
+            IP=$(echo "${STEP_TARGETS_PUBLIC_IPS}" | cut -d',' -f1)
             if [[ -n "$IP" && "$IP" != "None" && "$IP" != "N/A" ]]; then
-              echo "url=http://${IP}:${{ inputs.app_port }}" >> $GITHUB_OUTPUT
+              echo "url=http://${IP}:${APP_PORT}" >> $GITHUB_OUTPUT
             else
               echo "url=N/A" >> $GITHUB_OUTPUT
             fi
@@ -629,19 +659,26 @@ jobs:
 
       - name: Generate Summary
         if: always()
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          DEPLOY_METHOD: ${{ inputs.deploy_method }}
+          TARGET_TYPE: ${{ inputs.target_type }}
+          STEP_TARGETS_COUNT: ${{ steps.targets.outputs.count }}
+          IMAGE_URI: ${{ inputs.image_uri }}
+          STEP_RESULT_STATUS: ${{ steps.result.outputs.status }}
         run: |
           echo "## EC2 Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Deploy Method | **${{ inputs.deploy_method }}** |" >> $GITHUB_STEP_SUMMARY
-          echo "| Target Type | ${{ inputs.target_type }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Instances Updated | ${{ steps.targets.outputs.count }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Image | \`${{ inputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${ENVIRONMENT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy Method | **${DEPLOY_METHOD}** |" >> $GITHUB_STEP_SUMMARY
+          echo "| Target Type | ${TARGET_TYPE} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Instances Updated | ${STEP_TARGETS_COUNT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${IMAGE_URI}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [[ "${{ steps.result.outputs.status }}" == "success" ]]; then
+          if [[ "${STEP_RESULT_STATUS}" == "success" ]]; then
             echo "### Deployment: **SUCCESS**" >> $GITHUB_STEP_SUMMARY
           else
             echo "### Deployment: **FAILED**" >> $GITHUB_STEP_SUMMARY

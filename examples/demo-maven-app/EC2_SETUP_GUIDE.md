@@ -26,7 +26,7 @@ The instance needs to be authenticated to pull images from Nexus:
 
 ```bash
 # Login to Nexus Docker registry
-docker login array-beauty-beyond-previously.trycloudflare.com
+docker login nexus-docker.example.com
 
 # Enter credentials when prompted:
 # Username: <NEXUS_USERNAME>
@@ -72,7 +72,7 @@ exit
 # SSH back in
 
 # 3. Login to Nexus
-docker login array-beauty-beyond-previously.trycloudflare.com
+docker login nexus-docker.example.com
 # Enter credentials
 
 # 4. Verify docker-compose.yaml
@@ -119,10 +119,10 @@ cat ~/.ssh/authorized_keys
 ### Issue: Docker pull fails
 ```bash
 # Re-authenticate to Nexus
-docker login array-beauty-beyond-previously.trycloudflare.com
+docker login nexus-docker.example.com
 
 # Test pull manually
-docker pull array-beauty-beyond-previously.trycloudflare.com/docker-hosted/demo-maven-app:latest
+docker pull nexus-docker.example.com/docker-hosted/demo-maven-app:latest
 ```
 
 ### Issue: Application won't start

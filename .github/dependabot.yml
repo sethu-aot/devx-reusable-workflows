@@ -1,0 +1,25 @@
+version: 2
+
+updates:
+  # Third-party actions are pinned to commit SHAs, which Dependabot understands:
+  # it opens a PR that moves the SHA and updates the trailing version comment.
+  # Without this, SHA pinning silently freezes the pipeline on old, unpatched
+  # action releases -- pinning and automated updates are a pair, not a choice.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(actions)"
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      # One PR for routine patch/minor bumps; majors stay separate so they get
+      # the review a breaking change deserves.
+      actions-minor:
+        update-types:
+          - minor
+          - patch
