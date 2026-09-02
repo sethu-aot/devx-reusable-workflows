@@ -8,8 +8,9 @@ name: "Orchestrator: CI Pipeline"
 # 4. Downloads artifacts from Nexus (if needed)
 # 5. Builds Docker images
 # 6. Sequential Post-Build Security: Trivy → SBOM → SBOM-Scan
-#    (push path only -- these scan the image from the registry, so there is
-#     nothing for them to pull when push is false)
+#    Trivy runs on both paths: a pushed image is pulled from the registry, and
+#    a build-only image is loaded from the tarball docker-build exports.
+#    SBOM/SBOM-scan remain push-only -- they describe a published artifact.
 # ------------------------------------------------------------------------------
 
 on:
@@ -346,6 +347,9 @@ jobs:
       # Opt-in per project: only worth it for mutable tags (a release
       # candidate that may be rebuilt), never for commit-SHA tags.
       backup_existing_tag: ${{ fromJson(needs.load-config.outputs.config).docker.backup_existing_tag == true }}
+      # On a build-only run the image never reaches a registry, so export it as
+      # a tarball for the container scanners to load.
+      export_image_artifact: ${{ inputs.push != true && fromJson(needs.load-config.outputs.config).security.trivy.enabled == true }}
       artifact_name: ${{ needs.load-config.outputs.artifact_name }}
       # AWS Context for ECR
       aws_region: ${{ fromJson(needs.load-config.outputs.config).aws.region || 'us-east-1' }}
@@ -370,17 +374,14 @@ jobs:
   # ---------------------------------------------------------------------------
   
   # STEP 1: Container Vulnerability Scan (Fails fast on CRITICAL CVEs)
-      # Image scanning needs an image that exists somewhere both jobs can reach.
-      # When push is false (the PR path) the image is built but never leaves the
-      # docker job's local daemon, so a `docker pull` here can only fail. Scan on
-      # the push path, where the image is really in the registry.
+      # Runs on both paths: a pushed image is pulled from the registry, and a
+      # build-only image is loaded from the tarball docker-build exported.
   trivy:
     needs: [load-config, docker]
     if: |
       always() &&
       fromJson(needs.load-config.outputs.config).security.trivy.enabled == true &&
-      needs.docker.result == 'success' &&
-      inputs.push == true
+      needs.docker.result == 'success'
     uses: sethu-aot/devx-reusable-workflows/.github/workflows/trivy-scan.yaml@v1
     secrets:
       # Generic-registry credentials first, Nexus as the fallback: these modules
@@ -391,6 +392,7 @@ jobs:
     with:
       scan_type: image
       image_uri: ${{ needs.docker.outputs.image_uri }}
+      image_artifact: ${{ needs.docker.outputs.image_artifact }}
       # Registry Authentication
       registry_type: ${{ fromJson(needs.load-config.outputs.config).docker.registry_type || 'ecr' }}
       registry_username: ${{ inputs.registry_username }}

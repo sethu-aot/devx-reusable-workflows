@@ -31,6 +31,14 @@ on:
         description: "Registry URL (for generic/nexus)"
         type: string
         default: ""
+      image_artifact:
+        description: |
+          Artifact holding the image as a tarball, produced by docker-build on a
+          build-only run. When set, the image is loaded from it instead of being
+          pulled, which is the only way to scan an image that was never pushed
+          -- the PR path.
+        type: string
+        default: ""
       registry_username:
         description: |
           Username for the generic registry. Prefer this over the secret of the
@@ -205,8 +213,28 @@ jobs:
           username: ${{ inputs.registry_username || secrets.registry_username }}
           password: ${{ secrets.registry_password }}
 
+      # An image that was never pushed exists only as a tarball artifact from
+      # docker-build. Loading it is the only way to scan on the PR path.
+      - name: Download Image Tarball
+        if: inputs.scan_type == 'image' && inputs.image_artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.image_artifact }}
+          path: ${{ runner.temp }}
+
+      - name: Load Image From Tarball
+        if: inputs.scan_type == 'image' && inputs.image_artifact != ''
+        env:
+          IMAGE_URI: ${{ inputs.image_uri }}
+        run: |
+          set -euo pipefail
+          echo "Loading image from tarball (built but never pushed)"
+          docker load --input "${RUNNER_TEMP}/image.tar"
+          docker image inspect "${IMAGE_URI}" >/dev/null
+          echo "Loaded ${IMAGE_URI}"
+
       - name: Pull Image for Scanning
-        if: inputs.scan_type == 'image'
+        if: inputs.scan_type == 'image' && inputs.image_artifact == ''
         env:
           IMAGE_URI: ${{ inputs.image_uri }}
         run: |

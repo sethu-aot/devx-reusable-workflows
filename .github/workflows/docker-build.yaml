@@ -106,6 +106,14 @@ on:
         description: "Push the image to the registry?"
         type: boolean
         default: true
+      export_image_artifact:
+        description: |
+          When not pushing, save the built image as a tarball artifact so a
+          later job can scan it. Without this a build-only run has nothing for
+          the container scanners to fetch, because the image exists only in this
+          job's build cache.
+        type: boolean
+        default: false
       backup_existing_tag:
         description: |
           Before pushing, copy any image already at this tag to <tag>-backup.
@@ -139,6 +147,9 @@ on:
       image_digest:
         description: "SHA256 digest of the pushed image (immutable reference)"
         value: ${{ jobs.build-push.outputs.image_digest }}
+      image_artifact:
+        description: "Name of the uploaded image tarball artifact, empty if none"
+        value: ${{ jobs.build-push.outputs.image_artifact }}
 
   # Allow manual trigger for testing
   workflow_dispatch:
@@ -209,6 +220,7 @@ jobs:
     outputs:
       image_uri: ${{ steps.meta.outputs.image_uri }}
       image_digest: ${{ steps.build.outputs.digest }}
+      image_artifact: ${{ steps.export.outputs.name }}
 
     # The `secrets` context is not available in a step-level `if:`, but it is
     # available in job-level `env:`. Resolve the presence check once here so
@@ -492,6 +504,38 @@ jobs:
           # Note: Set provenance: true, mode: max for SLSA Level 2+ compliance
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # On a build-only run, also write the image to a tarball so a later
+          # job can scan it. A `docker` output cannot be combined with a
+          # multi-arch build, which is why this is opt-in rather than always on.
+          outputs: ${{ (inputs.push != true && inputs.export_image_artifact == true) && format('type=docker,dest={0}/image.tar', runner.temp) || '' }}
+
+      # ----------------------------------------------------------------------
+      # 5b. EXPORT FOR SCANNING (build-only runs)
+      # Without this, a build-only image exists only in this job's build cache
+      # and the container scanners have nothing to fetch.
+      # ----------------------------------------------------------------------
+      - name: Verify Image Tarball
+        id: export
+        if: inputs.push != true && inputs.export_image_artifact == true
+        env:
+          ARTIFACT: image-${{ github.run_id }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          if [[ ! -s "${RUNNER_TEMP}/image.tar" ]]; then
+            echo "::error::Expected an image tarball at ${RUNNER_TEMP}/image.tar but found none."
+            exit 1
+          fi
+          ls -lh "${RUNNER_TEMP}/image.tar"
+          echo "name=${ARTIFACT}" >> "$GITHUB_OUTPUT"
+
+      - name: Store Image Tarball
+        if: inputs.push != true && inputs.export_image_artifact == true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-${{ github.run_id }}-${{ github.job }}
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1
+          if-no-files-found: error
 
       # ----------------------------------------------------------------------
       # 6. OUTPUT SUMMARY
