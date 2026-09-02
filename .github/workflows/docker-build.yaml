@@ -462,6 +462,7 @@ jobs:
           STEP_META_TAG: ${{ steps.meta.outputs.tag }}
           REGISTRY_TYPE: ${{ inputs.registry_type }}
           PLATFORMS: ${{ inputs.platforms }}
+          PUSHED: ${{ inputs.push }}
         run: |
           echo "# 🐳 Docker Build Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -473,4 +474,12 @@ jobs:
           echo "| **Registry** | ${REGISTRY_TYPE} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Platforms** | ${PLATFORMS} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Image pushed successfully to registry" >> $GITHUB_STEP_SUMMARY
+          # Report what actually happened. When push is false the image is only
+          # ever in the build cache, so claiming a push here is simply untrue.
+          if [[ "$PUSHED" == "true" ]]; then
+            echo "✅ Image pushed to registry" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ Build-only run (\`push: false\`) — the image was validated and discarded, not pushed." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No registry credentials were used and no image left this runner." >> $GITHUB_STEP_SUMMARY
+          fi
