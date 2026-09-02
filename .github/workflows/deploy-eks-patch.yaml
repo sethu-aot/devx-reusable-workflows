@@ -33,6 +33,20 @@ on:
         description: "Name of the container within the deployment"
         type: string
         required: true
+      workload_kind:
+        description: "Workload kind to patch: 'deployment', 'statefulset' or 'daemonset'"
+        type: string
+        default: "deployment"
+      additional_workloads:
+        description: |
+          Extra workloads that run this same image, as a compact JSON array of
+          {"name": ..., "container": ..., "kind": ...} objects, where "kind" is
+          optional and defaults to workload_kind. One image commonly drives
+          several workloads -- a web deployment plus its queue workers and
+          scheduler -- and they must all move together, or the environment is
+          left running two different versions of the same code.
+        type: string
+        default: "[]"
       
       # --- NAMESPACE ---
       namespace:
@@ -110,43 +124,82 @@ jobs:
             exit 1
           }
 
-      - name: Patch Deployment Image
+      - name: Patch Workload Images
         id: patch
         env:
           NAMESPACE: ${{ inputs.namespace }}
           DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
           CONTAINER_NAME: ${{ inputs.container_name }}
+          WORKLOAD_KIND: ${{ inputs.workload_kind }}
+          ADDITIONAL_WORKLOADS: ${{ inputs.additional_workloads }}
           IMAGE_URI: ${{ inputs.image_uri }}
           DRY_RUN: ${{ inputs.dry_run }}
           TIMEOUT: ${{ inputs.timeout }}
         run: |
-          DEPLOYMENT="${DEPLOYMENT_NAME}"
-          CONTAINER="${CONTAINER_NAME}"
-          IMAGE="${IMAGE_URI}"
-          
-          echo "🚀 Patching deployment '$DEPLOYMENT' in namespace '$NAMESPACE'..."
-          echo "Container: $CONTAINER"
-          echo "New Image: $IMAGE"
-          
-          DRY_RUN_FLAG=""
-          if [[ "${DRY_RUN}" == "true" ]]; then
-            DRY_RUN_FLAG="--dry-run=server"
-          fi
-          
-          kubectl set image "deployment/$DEPLOYMENT" "$CONTAINER=$IMAGE" \
-            -n "$NAMESPACE" $DRY_RUN_FLAG 2>&1 | tee patch-output.txt
-          
-          if [[ $? -ne 0 ]]; then
-            echo "::error::Failed to set new image for deployment"
+          set -euo pipefail
+
+          # Only kinds that kubectl can both 'set image' and 'rollout status'.
+          case "${WORKLOAD_KIND}" in
+            deployment|statefulset|daemonset) ;;
+            *)
+              echo "::error::workload_kind must be deployment, statefulset or daemonset (got '${WORKLOAD_KIND}')."
+              exit 1
+              ;;
+          esac
+
+          EXTRA="${ADDITIONAL_WORKLOADS:-[]}"
+          if ! printf '%s' "$EXTRA" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::additional_workloads must be a JSON array; got: ${EXTRA}"
             exit 1
           fi
-          
-          if [[ "${DRY_RUN}" != "true" ]]; then
-            echo "📊 Waiting for rollout status..."
-            kubectl rollout status "deployment/$DEPLOYMENT" -n "$NAMESPACE" --timeout="${TIMEOUT}"
-          else
-            echo "✅ Dry run completed successfully"
+
+          # kind|name|container, primary workload first.
+          SPECS=("${WORKLOAD_KIND}|${DEPLOYMENT_NAME}|${CONTAINER_NAME}")
+          while IFS= read -r spec; do
+            [[ -n "$spec" ]] && SPECS+=("$spec")
+          done < <(printf '%s' "$EXTRA" | jq -r --arg k "${WORKLOAD_KIND}" '
+            .[] | "\(.kind // $k)|\(.name // "")|\(.container // "")"')
+
+          DRY_RUN_FLAG=()
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            DRY_RUN_FLAG=(--dry-run=server)
           fi
+
+          for spec in "${SPECS[@]}"; do
+            IFS='|' read -r KIND NAME CONTAINER <<< "$spec"
+
+            case "$KIND" in
+              deployment|statefulset|daemonset) ;;
+              *)
+                echo "::error::Unsupported kind '${KIND}' for workload '${NAME}'."
+                exit 1
+                ;;
+            esac
+            if [[ -z "$NAME" || -z "$CONTAINER" ]]; then
+              echo "::error::Each workload needs both a name and a container (got '${spec}')."
+              exit 1
+            fi
+
+            echo "::group::${KIND}/${NAME} -> ${IMAGE_URI}"
+            # No pipe here: piping into tee would report tee's exit status and
+            # a failed patch would be read as a success.
+            kubectl set image "${KIND}/${NAME}" "${CONTAINER}=${IMAGE_URI}" \
+              -n "${NAMESPACE}" "${DRY_RUN_FLAG[@]}"
+            echo "::endgroup::"
+          done
+
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            echo "Dry run completed; no rollout was started."
+            exit 0
+          fi
+
+          # Roll out only after every image is set, so a bad spec in the list
+          # fails before any workload starts restarting.
+          for spec in "${SPECS[@]}"; do
+            IFS='|' read -r KIND NAME _ <<< "$spec"
+            echo "Waiting for ${KIND}/${NAME} to roll out..."
+            kubectl rollout status "${KIND}/${NAME}" -n "${NAMESPACE}" --timeout="${TIMEOUT}"
+          done
 
       - name: Set Result
         id: result

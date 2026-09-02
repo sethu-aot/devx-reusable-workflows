@@ -24,7 +24,10 @@ on:
     inputs:
       # --- REQUIRED INPUTS ---
       environment:
-        description: "Target environment: dev, qa, staging, production"
+        description: |
+          Environment to deploy. Any name the config defines under
+          deployment.environments is valid -- teams use demo, uat, sit, preprod
+          and others, so this workflow does not keep a list of its own.
         type: string
         required: false
         default: "dev"
@@ -76,14 +79,10 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Target environment"
-        type: choice
-        options:
-          - dev
-          - qa
-          - staging
-          - production
+        description: "Environment to deploy (must exist in the config)"
+        type: string
         required: true
+        default: "dev"
       image_uri:
         description: "Docker image URI to deploy"
         type: string
@@ -127,6 +126,8 @@ jobs:
       deployment_method: ${{ steps.extract.outputs.deployment_method }}
       deployment_name: ${{ steps.extract.outputs.deployment_name }}
       container_name: ${{ steps.extract.outputs.container_name }}
+      workload_kind: ${{ steps.extract.outputs.workload_kind }}
+      additional_workloads: ${{ steps.extract.outputs.additional_workloads }}
       # EKS-specific
       helm_chart_path: ${{ steps.extract.outputs.helm_chart_path }}
       helm_release_name: ${{ steps.extract.outputs.helm_release_name }}
@@ -177,10 +178,19 @@ jobs:
           # Trim whitespace from inputs (prevents YAML multiline newline issues)
           IMAGE_URI=$(echo "${IMAGE_URI}" | xargs)
           
-          # Validate environment value
-          if [[ ! "${ENVIRONMENT}" =~ ^(dev|qa|staging|production)$ ]]; then
-            echo "::error::Invalid environment: ${ENVIRONMENT}"
-            echo "::error::Must be one of: dev, qa, staging, production"
+          # Check the shape only. Which environments exist is the config's to
+          # decide -- it is validated below against deployment.environments --
+          # and a fixed list here would reject perfectly ordinary names like
+          # demo, uat or preprod. The pattern still keeps the value safe to use
+          # as a yq path segment and a Kubernetes name.
+          if [[ ! "${ENVIRONMENT}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+            echo "::error::Invalid environment name: '${ENVIRONMENT}'"
+            echo "::error::Use lowercase letters, digits and hyphens (e.g. dev, demo, pre-prod)."
+            exit 1
+          fi
+
+          if [[ -z "$IMAGE_URI" ]]; then
+            echo "::error::image_uri is required; pass the image built by CI."
             exit 1
           fi
           
@@ -281,7 +291,10 @@ jobs:
           
           # AWS settings
           REGION=$(yq ".deployment.environments.$ENV.region // .aws.default_region // \"us-east-1\"" $CONFIG_FILE)
-          ROLE=$(yq ".aws.role_to_assume // \"\"" $CONFIG_FILE)
+          # Environment-scoped roles are the norm for env isolation: each is
+          # usually trusted for one namespace only, so falling back to a global
+          # role would authenticate and then be denied by RBAC in that namespace.
+          ROLE=$(yq ".deployment.environments.$ENV.aws.role_to_assume // .deployment.environments.$ENV.role_to_assume // .aws.role_to_assume // \"\"" $CONFIG_FILE)
           echo "aws_region=$REGION" >> $GITHUB_OUTPUT
           echo "role_to_assume=$ROLE" >> $GITHUB_OUTPUT
           
@@ -290,8 +303,8 @@ jobs:
             eks)
               CLUSTER=$(yq ".deployment.environments.$ENV.cluster_name // \"\"" $CONFIG_FILE)
               NAMESPACE=$(yq ".deployment.environments.$ENV.namespace // \"default\"" $CONFIG_FILE)
-              CHART=$(yq ".deployment.helm.chart_path // .deployment.environments.$ENV.helm.chart_path // \"\"" $CONFIG_FILE)
-              RELEASE=$(yq ".deployment.helm.release_name // .deployment.environments.$ENV.helm.release_name // \"\"" $CONFIG_FILE)
+              CHART=$(yq ".deployment.environments.$ENV.helm.chart_path // .deployment.helm.chart_path // \"\"" $CONFIG_FILE)
+              RELEASE=$(yq ".deployment.environments.$ENV.helm.release_name // .deployment.helm.release_name // \"\"" $CONFIG_FILE)
               VALUES=$(yq ".deployment.environments.$ENV.values_file // .deployment.environments.$ENV.helm.values_file // \"\"" $CONFIG_FILE)
               SET_VALUES=$(yq ".deployment.environments.$ENV.helm.set_values // \"\"" $CONFIG_FILE)
               
@@ -305,6 +318,9 @@ jobs:
               DEPLOY_NAME=$(yq ".deployment.environments.$ENV.deployment_name // \"\"" $CONFIG_FILE)
               CONT_NAME=$(yq ".deployment.environments.$ENV.container_name // \"\"" $CONFIG_FILE)
               SVC_NAME=$(yq ".deployment.environments.$ENV.service_name // \"\"" $CONFIG_FILE)
+              WORKLOAD_KIND=$(yq ".deployment.environments.$ENV.workload_kind // .deployment.workload_kind // \"deployment\"" $CONFIG_FILE)
+              # -I=0 keeps this on one line, which a job output has to be.
+              EXTRA_WORKLOADS=$(yq -o=json -I=0 ".deployment.environments.$ENV.additional_workloads // .deployment.additional_workloads // []" $CONFIG_FILE)
               
               echo "cluster_name=$CLUSTER" >> $GITHUB_OUTPUT
               echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
@@ -316,13 +332,15 @@ jobs:
               echo "deployment_method=$DEPLOY_METHOD" >> $GITHUB_OUTPUT
               echo "deployment_name=$DEPLOY_NAME" >> $GITHUB_OUTPUT
               echo "container_name=$CONT_NAME" >> $GITHUB_OUTPUT
+              echo "workload_kind=$WORKLOAD_KIND" >> $GITHUB_OUTPUT
+              echo "additional_workloads=$EXTRA_WORKLOADS" >> $GITHUB_OUTPUT
               echo "service_name=$SVC_NAME" >> $GITHUB_OUTPUT
               ;;
             
             k8s)
               NAMESPACE=$(yq ".deployment.environments.$ENV.namespace // \"default\"" $CONFIG_FILE)
-              CHART=$(yq ".deployment.helm.chart_path // .deployment.environments.$ENV.helm.chart_path // \"\"" $CONFIG_FILE)
-              RELEASE=$(yq ".deployment.helm.release_name // .deployment.environments.$ENV.helm.release_name // \"\"" $CONFIG_FILE)
+              CHART=$(yq ".deployment.environments.$ENV.helm.chart_path // .deployment.helm.chart_path // \"\"" $CONFIG_FILE)
+              RELEASE=$(yq ".deployment.environments.$ENV.helm.release_name // .deployment.helm.release_name // \"\"" $CONFIG_FILE)
               VALUES=$(yq ".deployment.environments.$ENV.values_file // .deployment.environments.$ENV.helm.values_file // \"\"" $CONFIG_FILE)
               SET_VALUES=$(yq ".deployment.environments.$ENV.helm.set_values // \"\"" $CONFIG_FILE)
 
@@ -470,6 +488,8 @@ jobs:
       namespace: ${{ needs.validate-and-load.outputs.namespace }}
       deployment_name: ${{ needs.validate-and-load.outputs.deployment_name }}
       container_name: ${{ needs.validate-and-load.outputs.container_name }}
+      workload_kind: ${{ needs.validate-and-load.outputs.workload_kind }}
+      additional_workloads: ${{ needs.validate-and-load.outputs.additional_workloads }}
       aws_region: ${{ needs.validate-and-load.outputs.aws_region }}
       role_to_assume: ${{ needs.validate-and-load.outputs.role_to_assume }}
       dry_run: ${{ inputs.dry_run }}
