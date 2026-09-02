@@ -27,6 +27,14 @@ on:
         description: "Push images and artifacts to registries?"
         type: boolean
         default: true
+      image_tag:
+        description: |
+          Explicit image tag, overriding both docker.image_tag in the config and
+          the branch-based smart versioning. Use this when the tag is decided at
+          run time -- e.g. a caller triggered by a release tag passing
+          github.ref_name so the image carries the release version.
+        type: string
+        default: ""
       registry_username:
         description: |
           Registry username, passed as an input rather than a secret. A secret is
@@ -330,7 +338,7 @@ jobs:
       registry_type: ${{ fromJson(needs.load-config.outputs.config).docker.registry_type || 'ecr' }}
       registry_username: ${{ inputs.registry_username }}
       image_name: ${{ fromJson(needs.load-config.outputs.config).docker.image_name }}
-      image_tag: ${{ fromJson(needs.load-config.outputs.config).docker.image_tag || '' }}
+      image_tag: ${{ inputs.image_tag || fromJson(needs.load-config.outputs.config).docker.image_tag || '' }}
       artifact_name: ${{ needs.load-config.outputs.artifact_name }}
       # AWS Context for ECR
       aws_region: ${{ fromJson(needs.load-config.outputs.config).aws.region || 'us-east-1' }}
