@@ -8,6 +8,8 @@ name: "Orchestrator: CI Pipeline"
 # 4. Downloads artifacts from Nexus (if needed)
 # 5. Builds Docker images
 # 6. Sequential Post-Build Security: Trivy → SBOM → SBOM-Scan
+#    (push path only -- these scan the image from the registry, so there is
+#     nothing for them to pull when push is false)
 # ------------------------------------------------------------------------------
 
 on:
@@ -344,12 +346,17 @@ jobs:
   # ---------------------------------------------------------------------------
   
   # STEP 1: Container Vulnerability Scan (Fails fast on CRITICAL CVEs)
+      # Image scanning needs an image that exists somewhere both jobs can reach.
+      # When push is false (the PR path) the image is built but never leaves the
+      # docker job's local daemon, so a `docker pull` here can only fail. Scan on
+      # the push path, where the image is really in the registry.
   trivy:
     needs: [load-config, docker]
     if: |
       always() &&
       fromJson(needs.load-config.outputs.config).security.trivy.enabled == true &&
-      needs.docker.result == 'success'
+      needs.docker.result == 'success' &&
+      inputs.push == true
     uses: sethu-aot/devx-reusable-workflows/.github/workflows/trivy-scan.yaml@v1
     secrets:
       registry_username: ${{ secrets.NEXUS_USERNAME }}
@@ -377,6 +384,7 @@ jobs:
       always() &&
       fromJson(needs.load-config.outputs.config).security.sbom.enabled == true &&
       needs.docker.result == 'success' &&
+      inputs.push == true &&
       (needs.trivy.result == 'success' || needs.trivy.result == 'skipped')
     uses: sethu-aot/devx-reusable-workflows/.github/workflows/sbom-generate.yaml@v1
     secrets:
