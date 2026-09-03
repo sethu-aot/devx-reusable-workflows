@@ -602,12 +602,21 @@ jobs:
   # 5. ROLLBACK (On Health Check Failure)
   # ---------------------------------------------------------------------------
   rollback:
-    needs: [validate-and-load, deploy-eks, deploy-eks-patch, deploy-ec2, deploy-ecs, health-check]
+    needs: [validate-and-load, deploy-eks, deploy-eks-patch, deploy-ec2, deploy-ecs, deploy-k8s, health-check]
+    # A failed deploy needs reverting just as much as a failed health check --
+    # keying only on the health check meant a failed image patch or a timed-out
+    # rollout was left in place. Note a skipped health check is not a failure,
+    # so this does not fire when health checks are simply turned off.
     if: |
       always() &&
-      needs.health-check.result == 'failure' &&
+      inputs.dry_run != true &&
       needs.validate-and-load.outputs.auto_rollback == 'true' &&
-      inputs.dry_run != true
+      (needs.health-check.result == 'failure' ||
+       needs.deploy-eks.result == 'failure' ||
+       needs.deploy-eks-patch.result == 'failure' ||
+       needs.deploy-ec2.result == 'failure' ||
+       needs.deploy-ecs.result == 'failure' ||
+       needs.deploy-k8s.result == 'failure')
     uses: sethu-aot/devx-reusable-workflows/.github/workflows/rollback.yaml@v1
     with:
       environment: ${{ inputs.environment }}
@@ -615,6 +624,10 @@ jobs:
       cluster_name: ${{ needs.validate-and-load.outputs.cluster_name || needs.validate-and-load.outputs.ecs_cluster_name }}
       namespace: ${{ needs.validate-and-load.outputs.namespace }}
       helm_release_name: ${{ needs.validate-and-load.outputs.helm_release_name }}
+      deployment_method: ${{ needs.validate-and-load.outputs.deployment_method }}
+      workload_kind: ${{ needs.validate-and-load.outputs.workload_kind }}
+      deployment_name: ${{ needs.validate-and-load.outputs.deployment_name }}
+      additional_workloads: ${{ needs.validate-and-load.outputs.additional_workloads }}
       service_name: ${{ needs.validate-and-load.outputs.ecs_service_name }}
       task_definition_family: ${{ needs.validate-and-load.outputs.task_definition_family }}
       aws_region: ${{ needs.validate-and-load.outputs.aws_region }}

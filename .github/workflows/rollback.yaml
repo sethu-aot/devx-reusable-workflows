@@ -30,6 +30,26 @@ on:
         description: "Helm release name"
         type: string
         default: ""
+      deployment_method:
+        description: |
+          How the deploy was performed: 'helm' or 'patch'. A patch deploy is
+          made with kubectl outside Helm, so Helm has no revision recording it
+          and 'helm rollback' would revert to the wrong state -- even when a
+          release name is configured.
+        type: string
+        default: "helm"
+      workload_kind:
+        description: "Workload kind for a patch rollback: deployment, statefulset or daemonset"
+        type: string
+        default: "deployment"
+      deployment_name:
+        description: "Primary workload to roll back (patch deploys)"
+        type: string
+        default: ""
+      additional_workloads:
+        description: "Extra workloads that were deployed together, as a compact JSON array"
+        type: string
+        default: "[]"
       revision:
         description: "Specific revision to rollback to (0 = previous)"
         type: string
@@ -143,7 +163,7 @@ jobs:
       # -------------------------------------------------------------------------
       - name: Helm Rollback
         id: rollback
-        if: inputs.deployment_target == 'eks' && inputs.helm_release_name != ''
+        if: inputs.deployment_target == 'eks' && inputs.deployment_method != 'patch' && inputs.helm_release_name != ''
         env:
           HELM_RELEASE_NAME: ${{ inputs.helm_release_name }}
           NAMESPACE: ${{ inputs.namespace }}
@@ -186,29 +206,60 @@ jobs:
       # KUBERNETES NATIVE ROLLBACK (if no Helm)
       # -------------------------------------------------------------------------
       - name: Kubernetes Rollback
-        if: inputs.deployment_target == 'eks' && inputs.helm_release_name == ''
+        if: inputs.deployment_target == 'eks' && (inputs.deployment_method == 'patch' || inputs.helm_release_name == '')
         env:
           NAMESPACE: ${{ inputs.namespace }}
+          WORKLOAD_KIND: ${{ inputs.workload_kind }}
+          DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
+          ADDITIONAL_WORKLOADS: ${{ inputs.additional_workloads }}
         run: |
-          echo "Rolling back Kubernetes deployment"
-          
-          
-          # Get deployments in namespace
-          DEPLOYMENTS=$(kubectl get deployments -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}')
-          
-          for DEPLOY in $DEPLOYMENTS; do
-            echo "Rolling back deployment: $DEPLOY"
-            kubectl rollout undo deployment/"$DEPLOY" -n "$NAMESPACE" || {
-              echo "::warning::Failed to rollback $DEPLOY"
-            }
+          set -euo pipefail
+
+          # Roll back only what this deployment touched. Enumerating the
+          # namespace would revert unrelated workloads -- a shared namespace
+          # commonly holds databases, brokers and other teams' services.
+          if [[ -z "${DEPLOYMENT_NAME}" ]]; then
+            echo "::error::deployment_name is required to roll back a patch deploy."
+            echo "::error::Refusing to guess which workloads to revert."
+            exit 1
+          fi
+
+          EXTRA="${ADDITIONAL_WORKLOADS:-[]}"
+          if ! printf '%s' "$EXTRA" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::additional_workloads must be a JSON array; got: ${EXTRA}"
+            exit 1
+          fi
+
+          SPECS=("${WORKLOAD_KIND}|${DEPLOYMENT_NAME}")
+          while IFS= read -r spec; do
+            [[ -n "$spec" ]] && SPECS+=("$spec")
+          done < <(printf '%s' "$EXTRA" | jq -r --arg k "${WORKLOAD_KIND}" '
+            .[] | "\(.kind // $k)|\(.name // "")"')
+
+          FAILED=0
+          for spec in "${SPECS[@]}"; do
+            IFS='|' read -r KIND NAME <<< "$spec"
+            case "$KIND" in
+              deployment|statefulset|daemonset) ;;
+              *) echo "::error::Unsupported kind '${KIND}'."; exit 1 ;;
+            esac
+            [[ -z "$NAME" ]] && { echo "::error::Workload name missing in '${spec}'."; exit 1; }
+
+            echo "::group::rollout undo ${KIND}/${NAME}"
+            if kubectl rollout undo "${KIND}/${NAME}" -n "${NAMESPACE}"; then
+              kubectl rollout status "${KIND}/${NAME}" -n "${NAMESPACE}" --timeout=5m || FAILED=1
+            else
+              echo "::warning::Could not roll back ${KIND}/${NAME} (no previous revision?)"
+              FAILED=1
+            fi
+            echo "::endgroup::"
           done
-          
-          # Wait for rollout
-          for DEPLOY in $DEPLOYMENTS; do
-            kubectl rollout status deployment/"$DEPLOY" -n "$NAMESPACE" --timeout=5m || true
-          done
-          
-          echo "Kubernetes rollback completed"
+
+          if [[ "$FAILED" -ne 0 ]]; then
+            echo "::error::At least one workload did not roll back cleanly; check it by hand."
+            exit 1
+          fi
+          echo "Rolled back ${#SPECS[@]} workload(s) in ${NAMESPACE}"
 
       # -------------------------------------------------------------------------
       # EC2 ROLLBACK
