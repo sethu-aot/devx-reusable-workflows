@@ -43,6 +43,18 @@ on:
         description: "Kubernetes deployment name (auto-detected if not provided)"
         type: string
         default: ""
+      workload_kind:
+        description: "Workload kind to check: deployment, statefulset or daemonset"
+        type: string
+        default: "deployment"
+      additional_workloads:
+        description: |
+          Other workloads the deploy updated, as a compact JSON array of
+          {"name","container","kind"}. All of them are checked: declaring one
+          release healthy on the strength of a single workload hides a partly
+          failed rollout.
+        type: string
+        default: "[]"
       
       # SSL Verification
       verify_ssl:
@@ -221,92 +233,96 @@ jobs:
         env:
           NAMESPACE: ${{ inputs.namespace }}
           DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
+          WORKLOAD_KIND: ${{ inputs.workload_kind }}
+          ADDITIONAL_WORKLOADS: ${{ inputs.additional_workloads }}
           RETRIES: ${{ inputs.retries }}
           RETRY_INTERVAL: ${{ inputs.retry_interval }}
           TIMEOUT: ${{ inputs.timeout }}
         run: |
-          echo "Checking Kubernetes deployment health..."
-          
-          DEPLOYMENT="${DEPLOYMENT_NAME}"
-          MAX_RETRIES="${RETRIES}"
-          
-          # If deployment name not provided, find deployments in namespace
-          if [[ -z "$DEPLOYMENT" ]]; then
-            echo "Auto-detecting deployments in namespace: $NAMESPACE"
-            DEPLOYMENTS=$(kubectl get deployments -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}')
-            DEPLOYMENT=$(echo "$DEPLOYMENTS" | tr ' ' '\n' | head -1)
-            echo "Found deployment: $DEPLOYMENT"
-          fi
-          
-          if [[ -z "$DEPLOYMENT" ]]; then
-            echo "::error::No deployments found in namespace $NAMESPACE"
-            echo "status=unhealthy" >> $GITHUB_OUTPUT
+          set -uo pipefail
+
+          # Never guess the target. The previous version listed the namespace and
+          # took the first deployment, so a check for one component could pass on
+          # the strength of a completely different one.
+          if [[ -z "${DEPLOYMENT_NAME}" ]]; then
+            echo "::error::deployment_name is required for a k8s health check."
+            echo "::error::Refusing to pick an arbitrary workload from the namespace."
+            echo "status=unhealthy" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
-          # Wait for rollout to complete
-          for ((i=1; i<=MAX_RETRIES; i++)); do
-            echo "Attempt $i/$MAX_RETRIES: Checking deployment status..."
-            
-            ROLLOUT_STATUS=$(kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout="${TIMEOUT}"s 2>&1) && {
-              echo "Deployment rollout successful"
-              
-              # Verify pods are ready
-              READY_PODS=$(kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' || echo "0")
-              DESIRED_PODS=$(kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
-              
-              if [[ "$READY_PODS" == "$DESIRED_PODS" && "$READY_PODS" -gt 0 ]]; then
-                echo "All pods ready: $READY_PODS/$DESIRED_PODS"
-                
-                # CRITICAL: Check pod health details to catch CrashLoopBackOff
-                echo "Verifying pod health details..."
-                PODS_JSON=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance="$DEPLOYMENT" -o json 2>/dev/null || \
-                            kubectl get pods -n "$NAMESPACE" -l app="$DEPLOYMENT" -o json 2>/dev/null || echo '{}')
-                
-                # Check for unhealthy container statuses
-                CRASH_LOOP=$(echo "$PODS_JSON" | jq -r '.items[].status.containerStatuses[]? | select(.state.waiting.reason == "CrashLoopBackOff") | .name' 2>/dev/null || echo "")
-                
-                if [[ -n "$CRASH_LOOP" ]]; then
-                  echo "::error::CrashLoopBackOff detected in containers: $CRASH_LOOP"
-                  echo "status=unhealthy" >> $GITHUB_OUTPUT
-                  echo "details=CrashLoopBackOff detected" >> $GITHUB_OUTPUT
-                  exit 1
+
+          EXTRA="${ADDITIONAL_WORKLOADS:-[]}"
+          if ! printf '%s' "$EXTRA" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::additional_workloads must be a JSON array; got: ${EXTRA}"
+            echo "status=unhealthy" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          SPECS=("${WORKLOAD_KIND}|${DEPLOYMENT_NAME}")
+          while IFS= read -r spec; do
+            [[ -n "$spec" ]] && SPECS+=("$spec")
+          done < <(printf '%s' "$EXTRA" | jq -r --arg k "${WORKLOAD_KIND}" '
+            .[] | "\(.kind // $k)|\(.name // "")"')
+
+          check_one() {
+            local KIND="$1" NAME="$2" i
+            for ((i=1; i<=RETRIES; i++)); do
+              echo "  attempt $i/${RETRIES} for ${KIND}/${NAME}"
+              local OUT
+              if OUT=$(kubectl rollout status "${KIND}/${NAME}" -n "${NAMESPACE}" --timeout="${TIMEOUT}s" 2>&1); then
+                local READY DESIRED
+                READY=$(kubectl get "${KIND}" "${NAME}" -n "${NAMESPACE}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
+                DESIRED=$(kubectl get "${KIND}" "${NAME}" -n "${NAMESPACE}" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)
+                READY=${READY:-0}; DESIRED=${DESIRED:-0}
+                if [[ "$READY" == "$DESIRED" && "$READY" -gt 0 ]]; then
+                  # A ready count alone misses a container that is restarting.
+                  local PODS CRASH
+                  PODS=$(kubectl get pods -n "${NAMESPACE}" -l "app.kubernetes.io/instance=${NAME}" -o json 2>/dev/null)
+                  if [[ -z "$PODS" || "$(printf '%s' "$PODS" | jq '.items | length')" == "0" ]]; then
+                    PODS=$(kubectl get pods -n "${NAMESPACE}" -l "app=${NAME}" -o json 2>/dev/null || echo '{}')
+                  fi
+                  CRASH=$(printf '%s' "$PODS" | jq -r '
+                    .items[]?.status.containerStatuses[]?
+                    | select(.state.waiting.reason == "CrashLoopBackOff") | .name' 2>/dev/null)
+                  if [[ -n "$CRASH" ]]; then
+                    echo "::error::CrashLoopBackOff in ${KIND}/${NAME}: ${CRASH}"
+                    return 1
+                  fi
+                  echo "  ${KIND}/${NAME} healthy (${READY}/${DESIRED} ready)"
+                  return 0
                 fi
-                
-                # Check restart counts (high restarts indicate flapping)
-                TOTAL_RESTARTS=$(echo "$PODS_JSON" | jq '[.items[].status.containerStatuses[]?.restartCount // 0] | add' 2>/dev/null || echo "0")
-                
-                if [[ "$TOTAL_RESTARTS" -gt 10 ]]; then
-                  echo "::warning::High restart count detected: $TOTAL_RESTARTS restarts"
-                fi
-                
-                echo "Health check passed"
-                echo "status=healthy" >> $GITHUB_OUTPUT
-                echo "details=Deployment $DEPLOYMENT: $READY_PODS/$DESIRED_PODS pods ready ($TOTAL_RESTARTS restarts)" >> $GITHUB_OUTPUT
-                exit 0
               fi
-            }
-            
-            # Surface why the rollout has not completed. Without this the
-            # captured kubectl output is discarded and every retry logs the
-            # same uninformative line.
-            echo "Deployment not ready: ${ROLLOUT_STATUS:-no output from kubectl}"
-            echo "Waiting ${RETRY_INTERVAL}s before retrying..."
-            sleep "$RETRY_INTERVAL"
+              echo "  not ready: ${OUT:-no output from kubectl}"
+              sleep "${RETRY_INTERVAL}"
+            done
+            echo "::error::${KIND}/${NAME} did not become healthy after ${RETRIES} attempts"
+            kubectl get pods -n "${NAMESPACE}" -l "app.kubernetes.io/instance=${NAME}" 2>/dev/null || true
+            return 1
+          }
+
+          FAILED=()
+          for spec in "${SPECS[@]}"; do
+            IFS='|' read -r KIND NAME <<< "$spec"
+            case "$KIND" in
+              deployment|statefulset|daemonset) ;;
+              *) echo "::error::Unsupported workload kind '${KIND}'."
+                 echo "status=unhealthy" >> "$GITHUB_OUTPUT"; exit 1 ;;
+            esac
+            echo "::group::health ${KIND}/${NAME}"
+            check_one "$KIND" "$NAME" || FAILED+=("${KIND}/${NAME}")
+            echo "::endgroup::"
           done
-          
-          echo "::error::Health check failed after $MAX_RETRIES attempts"
-          
-          echo "--- POD DIAGNOSTICS ---"
-          kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance="$DEPLOYMENT" || \
-          kubectl get pods -n "$NAMESPACE" -l app="$DEPLOYMENT" || true
-          
-          echo "--- RECENT EVENTS ---"
-          kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' | tail -20 || true
-          
-          echo "status=unhealthy" >> $GITHUB_OUTPUT
-          echo "details=Deployment $DEPLOYMENT failed to become healthy (check logs for details)" >> $GITHUB_OUTPUT
-          exit 1
+
+          if [[ ${#FAILED[@]} -gt 0 ]]; then
+            echo "--- RECENT EVENTS ---"
+            kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>/dev/null | tail -20 || true
+            echo "status=unhealthy" >> "$GITHUB_OUTPUT"
+            echo "details=unhealthy: ${FAILED[*]}" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "status=healthy" >> "$GITHUB_OUTPUT"
+          echo "details=${#SPECS[@]} workload(s) healthy in ${NAMESPACE}" >> "$GITHUB_OUTPUT"
 
       # -------------------------------------------------------------------------
       # HTTP HEALTH CHECK

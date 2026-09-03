@@ -597,6 +597,8 @@ jobs:
       inputs.dry_run != true
     uses: sethu-aot/devx-reusable-workflows/.github/workflows/health-check.yaml@v1
     with:
+      workload_kind: ${{ needs.validate-and-load.outputs.workload_kind }}
+      additional_workloads: ${{ needs.validate-and-load.outputs.additional_workloads }}
       environment: ${{ inputs.environment }}
       health_endpoint: ${{ needs.validate-and-load.outputs.health_check_endpoint }}
       health_url: >-
