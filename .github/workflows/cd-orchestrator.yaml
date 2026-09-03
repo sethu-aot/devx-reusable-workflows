@@ -423,7 +423,17 @@ jobs:
           echo "auto_rollback=$AUTO_ROLLBACK" >> $GITHUB_OUTPUT
           
           # Notification settings
-          NOTIFY_ENABLED=$(yq ".deployment.notifications.enabled // .deployment.environments.$ENV.notifications.enabled // \"true\"" $CONFIG_FILE)
+          # yq's // operator treats an explicit `false` as absent, so chaining
+          # it silently turns `notifications.enabled: false` back into true.
+          # Resolve the precedence with explicit null checks instead, the same
+          # way `atomic` above does.
+          NOTIFY_ENABLED=$(yq ".deployment.environments.$ENV.notifications.enabled" $CONFIG_FILE)
+          if [[ "$NOTIFY_ENABLED" == "null" ]]; then
+            NOTIFY_ENABLED=$(yq ".deployment.notifications.enabled" $CONFIG_FILE)
+          fi
+          if [[ "$NOTIFY_ENABLED" == "null" ]]; then
+            NOTIFY_ENABLED=true
+          fi
           echo "notifications_enabled=$NOTIFY_ENABLED" >> $GITHUB_OUTPUT
           
           echo "Configuration extracted successfully"

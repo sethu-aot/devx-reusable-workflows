@@ -172,6 +172,7 @@ jobs:
 
       - name: Setup kubectl
         env:
+          NAMESPACE: ${{ inputs.namespace }}
           CLUSTER_NAME: ${{ inputs.cluster_name }}
           AWS_REGION: ${{ inputs.aws_region }}
         run: |
@@ -181,10 +182,22 @@ jobs:
             --region "${AWS_REGION}"
           
           # Verify connectivity
-          kubectl cluster-info || {
-            echo "::error::Failed to connect to EKS cluster"
+          # 'kubectl cluster-info' lists services in kube-system, which a deploy
+          # role scoped to a single namespace -- the recommended setup -- cannot
+          # read, so it fails with Forbidden on a perfectly good connection.
+          # Discovery and SelfSubjectAccessReview are available to any
+          # authenticated principal, so check reachability and access that way.
+          kubectl version --request-timeout=20s >/dev/null || {
+            echo "::error::Cannot reach the Kubernetes API"
             exit 1
           }
+          if [[ -n "${NAMESPACE:-}" ]]; then
+            kubectl auth can-i get deployments -n "${NAMESPACE}" >/dev/null || {
+              echo "::error::Reached the cluster but have no access in namespace '${NAMESPACE}'"
+              echo "::error::Check the EKS access entry / RBAC binding for this role."
+              exit 1
+            }
+          fi
           
           echo "✅ Connected to cluster"
           

@@ -86,6 +86,7 @@ jobs:
 
       - name: Setup kubectl
         env:
+          NAMESPACE: ${{ inputs.namespace }}
           KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
         run: |
           set -euo pipefail
@@ -99,7 +100,22 @@ jobs:
             exit 1
           }
           chmod 600 ~/.kube/config
-          kubectl cluster-info || { echo "::error::Kubeconfig invalid or cluster unreachable"; exit 1; }
+          # 'kubectl cluster-info' lists services in kube-system, which a deploy
+          # role scoped to a single namespace -- the recommended setup -- cannot
+          # read, so it fails with Forbidden on a perfectly good connection.
+          # Discovery and SelfSubjectAccessReview are available to any
+          # authenticated principal, so check reachability and access that way.
+          kubectl version --request-timeout=20s >/dev/null || {
+            echo "::error::Cannot reach the Kubernetes API"
+            exit 1
+          }
+          if [[ -n "${NAMESPACE:-}" ]]; then
+            kubectl auth can-i get deployments -n "${NAMESPACE}" >/dev/null || {
+              echo "::error::Reached the cluster but have no access in namespace '${NAMESPACE}'"
+              echo "::error::Check the EKS access entry / RBAC binding for this role."
+              exit 1
+            }
+          fi
 
       - name: Setup Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
