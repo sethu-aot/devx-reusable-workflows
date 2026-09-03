@@ -611,7 +611,12 @@ jobs:
       cluster_name: ${{ needs.validate-and-load.outputs.cluster_name }}
       aws_region: ${{ needs.validate-and-load.outputs.aws_region }}
       role_to_assume: ${{ needs.validate-and-load.outputs.role_to_assume }}
-      deployment_name: ${{ needs.validate-and-load.outputs.helm_release_name }}
+      # A patch deploy has a workload name and often no Helm release at all,
+      # so the release name is the wrong target for it -- and an empty one
+      # used to make the check silently pick a workload from the namespace.
+      deployment_name: >-
+        ${{ needs.validate-and-load.outputs.deployment_name
+          || needs.validate-and-load.outputs.helm_release_name }}
       retries: ${{ needs.validate-and-load.outputs.health_check_retries }}
       retry_interval: ${{ needs.validate-and-load.outputs.health_check_retry_interval }}
       ingress_domain: ${{ needs.validate-and-load.outputs.ingress_domain }}
