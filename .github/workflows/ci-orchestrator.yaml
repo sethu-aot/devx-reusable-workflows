@@ -157,7 +157,11 @@ jobs:
           echo "language=$LANGUAGE" >> $GITHUB_OUTPUT
           echo "📋 Detected language: $LANGUAGE"
           
-          # Detect SAST tool (default: semgrep)
+          # Which SAST tool(s) to run. Accepts a comma-separated list, e.g.
+          # "sonarqube,semgrep", so a project can run both -- useful when one
+          # of them cannot run in some contexts. SonarQube needs a token and
+          # GitHub withholds secrets from fork pull requests, whereas semgrep
+          # needs none, so listing both keeps SAST coverage on every PR.
           SAST_TOOL=$(yq '.security.sast.tool // "semgrep"' "${CONFIG_PATH}")
           echo "sast_tool=$SAST_TOOL" >> $GITHUB_OUTPUT
           echo "🔍 SAST tool: $SAST_TOOL"
@@ -193,7 +197,7 @@ jobs:
     needs: load-config
     if: |
       fromJson(needs.load-config.outputs.config).security.sast.enabled == true &&
-      needs.load-config.outputs.sast_tool == 'semgrep'
+      contains(needs.load-config.outputs.sast_tool, 'semgrep')
     uses: sethu-aot/devx-reusable-workflows/.github/workflows/sast-semgrep.yaml@v1
     with:
       scan_path: ${{ fromJson(needs.load-config.outputs.config).security.sast.scan_path || '.' }}
@@ -206,7 +210,7 @@ jobs:
     needs: load-config
     if: |
       fromJson(needs.load-config.outputs.config).security.sast.enabled == true &&
-      needs.load-config.outputs.sast_tool == 'sonarqube'
+      contains(needs.load-config.outputs.sast_tool, 'sonarqube')
     uses: sethu-aot/devx-reusable-workflows/.github/workflows/sast-sonarqube.yaml@v1
     secrets:
       sonar_token: ${{ secrets.sonar_token }}

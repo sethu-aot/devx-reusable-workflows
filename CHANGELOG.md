@@ -9,6 +9,26 @@ in that major line.
 
 ## [Unreleased]
 
+## [1.2.1]
+
+### Fixed
+
+- **SonarQube analysis no longer fails a run when no token is available.**
+  GitHub withholds secrets from a `pull_request` run originating in a fork, so
+  `sonar_token` arrives empty and the scanner exits with "Not authorized or
+  project not found". In projects whose contributors work from personal forks
+  that is *every* pull request, so this blocked all of them on something the
+  contributor cannot fix. The analysis is now skipped with an explicit warning
+  explaining why, and the rest of the pipeline continues.
+
+### Changed
+
+- **`security.sast.tool` accepts a comma-separated list**, e.g.
+  `"sonarqube,semgrep"`, so a project can run both. This is the companion to
+  the change above: semgrep needs no token, so listing both keeps real SAST
+  coverage on fork pull requests while SonarQube still runs wherever a token
+  is present. A single value keeps working exactly as before.
+
 ## [1.1.1]
 
 ### Security

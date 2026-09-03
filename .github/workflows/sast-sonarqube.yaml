@@ -97,6 +97,26 @@ jobs:
         with:
           fetch-depth: 0  # Full history for better analysis
 
+      # SonarCloud needs a token, and GitHub does not pass secrets to a
+      # pull_request run from a fork. In projects where contributors work from
+      # forks that is every pull request, so a hard failure here blocks all of
+      # them on something they cannot fix. Skip the analysis instead and say so
+      # plainly -- callers that want SAST coverage on fork pull requests should
+      # also enable semgrep, which needs no token.
+      - name: Check for a Sonar token
+        id: token
+        env:
+          SONAR_TOKEN: ${{ secrets.sonar_token }}
+        run: |
+          if [[ -z "${SONAR_TOKEN}" ]]; then
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No sonar_token available, so SonarQube analysis is skipped."
+            echo "::warning::Secrets are not provided to pull_request runs from a fork."
+          else
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          fi
+
+
       # ------------------------------------------------------------------------
       # 2. SETUP LANGUAGE-SPECIFIC ENVIRONMENTS
       # ------------------------------------------------------------------------
@@ -217,7 +237,7 @@ jobs:
       # 4. SONARQUBE SCAN - MAVEN-SPECIFIC
       # ------------------------------------------------------------------------
       - name: Run SonarQube Analysis (Maven)
-        if: steps.detect_lang.outputs.language == 'maven'
+        if: steps.token.outputs.has_token == 'true' && (steps.detect_lang.outputs.language == 'maven')
         working-directory: ${{ steps.detect_lang.outputs.project_root }}
         env:
           SONAR_TOKEN: ${{ secrets.sonar_token }}
@@ -255,6 +275,7 @@ jobs:
       # ------------------------------------------------------------------------
       - name: SonarQube Scan (SonarCloud)
         if: |
+          steps.token.outputs.has_token == 'true' &&
           inputs.sonar_host_url == 'https://sonarcloud.io' &&
           steps.detect_lang.outputs.language != 'maven'
         uses: sonarsource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
@@ -274,6 +295,7 @@ jobs:
 
       - name: SonarQube Scan (Self-Hosted)
         if: |
+          steps.token.outputs.has_token == 'true' &&
           inputs.sonar_host_url != 'https://sonarcloud.io' &&
           steps.detect_lang.outputs.language != 'maven'
         uses: sonarsource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
@@ -311,7 +333,7 @@ jobs:
           fi
 
       - name: Wait for Quality Gate
-        if: inputs.wait_for_quality_gate == true
+        if: steps.token.outputs.has_token == 'true' && (inputs.wait_for_quality_gate == true)
         uses: sonarsource/sonarqube-quality-gate-action@7a5fffe8e523c40e0c740b6bc2712ab503e52efa # v1.2.1
         timeout-minutes: 5
         with:
