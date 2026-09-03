@@ -263,6 +263,20 @@ jobs:
 
             echo "::group::rollout undo ${KIND}/${NAME}"
             if kubectl rollout undo "${KIND}/${NAME}" -n "${NAMESPACE}"; then
+              # A StatefulSet or DaemonSet updates pods one at a time and will
+              # not move past a pod that never became Ready, so reverting the
+              # spec leaves the broken pod -- and the rollout -- stuck. The pod
+              # has to be deleted for the reverted spec to take effect. A
+              # Deployment recovers on its own via a new ReplicaSet, but the
+              # same sweep is harmless there.
+              SEL=$(kubectl get "${KIND}" "${NAME}" -n "${NAMESPACE}" -o go-template='{{range $k,$v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}' 2>/dev/null | sed 's/,$//')
+              if [[ -n "$SEL" ]]; then
+                STUCK=$(kubectl get pods -n "${NAMESPACE}" -l "$SEL" -o json 2>/dev/null | jq -r '.items[] | select(any(.status.containerStatuses[]?; .state.waiting.reason == "ImagePullBackOff" or .state.waiting.reason == "ErrImagePull" or .state.waiting.reason == "CrashLoopBackOff" or .state.waiting.reason == "InvalidImageName")) | .metadata.name' 2>/dev/null)
+                for POD in $STUCK; do
+                  echo "Deleting stuck pod ${POD} so the reverted spec can take effect"
+                  kubectl delete pod "${POD}" -n "${NAMESPACE}" --wait=false || true
+                done
+              fi
               kubectl rollout status "${KIND}/${NAME}" -n "${NAMESPACE}" --timeout=5m || FAILED=1
             else
               echo "::warning::Could not roll back ${KIND}/${NAME} (no previous revision?)"
