@@ -419,7 +419,15 @@ jobs:
           echo "deployment_timeout=$TIMEOUT" >> $GITHUB_OUTPUT
 
           # Rollback settings
-          AUTO_ROLLBACK=$(yq ".deployment.environments.$ENV.auto_rollback // \"true\"" $CONFIG_FILE)
+          # Same `//` pitfall as notifications: an explicit false would be
+          # read as absent, making auto_rollback impossible to turn off.
+          AUTO_ROLLBACK=$(yq ".deployment.environments.$ENV.auto_rollback" $CONFIG_FILE)
+          if [[ "$AUTO_ROLLBACK" == "null" ]]; then
+            AUTO_ROLLBACK=$(yq ".deployment.auto_rollback" $CONFIG_FILE)
+          fi
+          if [[ "$AUTO_ROLLBACK" == "null" ]]; then
+            AUTO_ROLLBACK=true
+          fi
           echo "auto_rollback=$AUTO_ROLLBACK" >> $GITHUB_OUTPUT
           
           # Notification settings
