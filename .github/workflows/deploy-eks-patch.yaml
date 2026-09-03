@@ -85,6 +85,13 @@ on:
       url:
         description: "Deployment URL"
         value: ${{ jobs.deploy.outputs.url }}
+      previous_images:
+        description: |
+          The image each workload ran immediately before this deploy, as a JSON
+          object keyed by "kind/name". Rollback restores exactly these rather
+          than stepping back a revision, which is not the same thing: a deploy
+          that changed nothing still has a previous revision to undo into.
+        value: ${{ jobs.deploy.outputs.previous_images }}
 
 permissions:
   contents: read
@@ -99,6 +106,7 @@ jobs:
     outputs:
       status: ${{ steps.result.outputs.status }}
       url: ${{ steps.deploy_url.outputs.url }}
+      previous_images: ${{ steps.patch.outputs.previous_images }}
 
     steps:
       - name: Checkout Code
@@ -172,6 +180,24 @@ jobs:
             [[ -n "$spec" ]] && SPECS+=("$spec")
           done < <(printf '%s' "$EXTRA" | jq -r --arg k "${WORKLOAD_KIND}" '
             .[] | "\(.kind // $k)|\(.name // "")|\(.container // "")"')
+
+          # Record what is running BEFORE anything changes, so a rollback can
+          # restore this exact state. Written to the step output up front so it
+          # survives a later failure in this same step -- which is precisely
+          # when rollback needs it.
+          PREV='{}'
+          for spec in "${SPECS[@]}"; do
+            IFS='|' read -r K N C <<< "$spec"
+            if [[ -z "$N" || -z "$C" ]]; then
+              continue
+            fi
+            CUR=$(kubectl get "${K}" "${N}" -n "${NAMESPACE}" -o jsonpath="{.spec.template.spec.containers[?(@.name==\"${C}\")].image}" 2>/dev/null || true)
+            if [[ -n "$CUR" ]]; then
+              PREV=$(printf '%s' "$PREV" | jq -c --arg k "${K}/${N}" --arg c "${C}" --arg i "$CUR" '.[$k] = {container: $c, image: $i}')
+            fi
+          done
+          echo "previous_images=${PREV}" >> "$GITHUB_OUTPUT"
+          echo "Captured pre-deploy images: ${PREV}"
 
           DRY_RUN_FLAG=()
           if [[ "${DRY_RUN}" == "true" ]]; then

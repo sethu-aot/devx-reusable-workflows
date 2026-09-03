@@ -50,6 +50,16 @@ on:
         description: "Extra workloads that were deployed together, as a compact JSON array"
         type: string
         default: "[]"
+      previous_images:
+        description: |
+          What each workload ran before the deploy, as a JSON object keyed by
+          "kind/name" with {container, image} values -- normally the deploy
+          module's previous_images output. When given, rollback restores these
+          exact images. That is not the same as `rollout undo`: undo steps back
+          one revision regardless, so after a deploy that changed nothing it
+          reverts a change this run never made. Falls back to undo when empty.
+        type: string
+        default: "{}"
       revision:
         description: "Specific revision to rollback to (0 = previous)"
         type: string
@@ -228,6 +238,7 @@ jobs:
           WORKLOAD_KIND: ${{ inputs.workload_kind }}
           DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
           ADDITIONAL_WORKLOADS: ${{ inputs.additional_workloads }}
+          PREVIOUS_IMAGES: ${{ inputs.previous_images }}
         run: |
           set -euo pipefail
 
@@ -252,6 +263,15 @@ jobs:
           done < <(printf '%s' "$EXTRA" | jq -r --arg k "${WORKLOAD_KIND}" '
             .[] | "\(.kind // $k)|\(.name // "")"')
 
+          PREV_IMAGES="${PREVIOUS_IMAGES:-}"
+          if [[ -z "$PREV_IMAGES" ]]; then
+            PREV_IMAGES='{}'
+          fi
+          if ! printf '%s' "$PREV_IMAGES" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            echo "::warning::previous_images is not a JSON object; falling back to rollout undo."
+            PREV_IMAGES='{}'
+          fi
+
           FAILED=0
           for spec in "${SPECS[@]}"; do
             IFS='|' read -r KIND NAME <<< "$spec"
@@ -261,8 +281,27 @@ jobs:
             esac
             [[ -z "$NAME" ]] && { echo "::error::Workload name missing in '${spec}'."; exit 1; }
 
-            echo "::group::rollout undo ${KIND}/${NAME}"
-            if kubectl rollout undo "${KIND}/${NAME}" -n "${NAMESPACE}"; then
+            # Prefer restoring the recorded pre-deploy image over `rollout undo`.
+            PREV_ENTRY=$(printf '%s' "$PREV_IMAGES" | jq -r --arg k "${KIND}/${NAME}" '.[$k] // empty' 2>/dev/null || true)
+            REVERTED=0
+            if [[ -n "$PREV_ENTRY" ]]; then
+              PC=$(printf '%s' "$PREV_ENTRY" | jq -r '.container')
+              PI=$(printf '%s' "$PREV_ENTRY" | jq -r '.image')
+              echo "::group::restore ${KIND}/${NAME} -> ${PI}"
+              if kubectl set image "${KIND}/${NAME}" "${PC}=${PI}" -n "${NAMESPACE}"; then
+                REVERTED=1
+              else
+                echo "::warning::Could not restore ${KIND}/${NAME} to ${PI}"
+              fi
+            else
+              echo "::group::rollout undo ${KIND}/${NAME}"
+              echo "No recorded pre-deploy image; stepping back one revision instead."
+              if kubectl rollout undo "${KIND}/${NAME}" -n "${NAMESPACE}"; then
+                REVERTED=1
+              fi
+            fi
+
+            if [[ "$REVERTED" -eq 1 ]]; then
               # A StatefulSet or DaemonSet updates pods one at a time and will
               # not move past a pod that never became Ready, so reverting the
               # spec leaves the broken pod -- and the rollout -- stuck. The pod
@@ -279,7 +318,7 @@ jobs:
               fi
               kubectl rollout status "${KIND}/${NAME}" -n "${NAMESPACE}" --timeout=5m || FAILED=1
             else
-              echo "::warning::Could not roll back ${KIND}/${NAME} (no previous revision?)"
+              echo "::warning::Could not roll back ${KIND}/${NAME}"
               FAILED=1
             fi
             echo "::endgroup::"

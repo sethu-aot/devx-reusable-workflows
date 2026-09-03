@@ -653,6 +653,9 @@ jobs:
       workload_kind: ${{ needs.validate-and-load.outputs.workload_kind }}
       deployment_name: ${{ needs.validate-and-load.outputs.deployment_name }}
       additional_workloads: ${{ needs.validate-and-load.outputs.additional_workloads }}
+      # Restore the exact images the deploy replaced. Empty for the Helm and
+      # other targets, which fall back to stepping back a revision.
+      previous_images: ${{ needs.deploy-eks-patch.outputs.previous_images }}
       service_name: ${{ needs.validate-and-load.outputs.ecs_service_name }}
       task_definition_family: ${{ needs.validate-and-load.outputs.task_definition_family }}
       aws_region: ${{ needs.validate-and-load.outputs.aws_region }}
