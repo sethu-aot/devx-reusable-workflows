@@ -370,6 +370,8 @@ jobs:
       # Build configuration
       build_args: ${{ fromJson(needs.load-config.outputs.config).docker.build_args || '' }}
       platforms: ${{ fromJson(needs.load-config.outputs.config).docker.platforms || 'linux/amd64' }}
+      # Multi-stage Dockerfiles whose last stage is not the one to ship.
+      target: ${{ fromJson(needs.load-config.outputs.config).docker.target || '' }}
       push: ${{ inputs.push }}
 
   # ---------------------------------------------------------------------------
