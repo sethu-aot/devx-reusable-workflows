@@ -243,15 +243,19 @@ jobs:
       # ----------------------------------------------------------------------
       
       # MODE A: AWS ECR (OIDC - No Keys)
+      # Only when pushing, as with the generic login below. A fork pull
+      # request gets no OIDC token, so assuming the role there fails the job
+      # before anything is built -- and a build that does not push has no use
+      # for registry credentials anyway.
       - name: Configure AWS Credentials (OIDC)
-        if: inputs.registry_type == 'ecr'
+        if: inputs.registry_type == 'ecr' && inputs.push == true
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ inputs.role_to_assume }}
           aws-region: ${{ inputs.aws_region }}
 
       - name: Login to Amazon ECR
-        if: inputs.registry_type == 'ecr'
+        if: inputs.registry_type == 'ecr' && inputs.push == true
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
 
@@ -416,9 +420,16 @@ jobs:
             fi
           
           elif [[ "$REGISTRY_TYPE" == "ecr" ]]; then
-            # AWS ECR
-            REGISTRY="$ECR_REGISTRY"
-            FULL_URI="${REGISTRY}/${IMAGE_NAME}:${TAG}"
+            # AWS ECR. Without a login (a build that does not push) there is
+            # no registry output, so name the image after the configured
+            # registry_url, or leave it unqualified: it only ever becomes a
+            # local tarball for the scanners.
+            REGISTRY="${ECR_REGISTRY:-$GENERIC_REGISTRY}"
+            if [[ -n "$REGISTRY" ]]; then
+              FULL_URI="${REGISTRY}/${IMAGE_NAME}:${TAG}"
+            else
+              FULL_URI="${IMAGE_NAME}:${TAG}"
+            fi
           
           else
             # Generic (Docker Hub, GHCR, etc.)
