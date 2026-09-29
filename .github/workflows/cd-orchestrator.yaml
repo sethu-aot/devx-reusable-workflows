@@ -452,7 +452,7 @@ jobs:
   notify-start:
     needs: validate-and-load
     if: needs.validate-and-load.outputs.notifications_enabled == 'true'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/notify-google-chat.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/notify-google-chat.yaml@test/m8flow-nextgen
     secrets:
       GOOGLE_CHAT_WEBHOOK: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
     with:
@@ -472,7 +472,7 @@ jobs:
       needs.validate-and-load.result == 'success' &&
       needs.validate-and-load.outputs.deployment_target == 'eks' &&
       needs.validate-and-load.outputs.deployment_method == 'helm'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/deploy-eks.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/deploy-eks.yaml@test/m8flow-nextgen
     with:
       environment: ${{ inputs.environment }}
       image_uri: ${{ inputs.image_uri }}
@@ -498,7 +498,7 @@ jobs:
       needs.validate-and-load.result == 'success' &&
       needs.validate-and-load.outputs.deployment_target == 'eks' &&
       needs.validate-and-load.outputs.deployment_method == 'patch'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/deploy-eks-patch.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/deploy-eks-patch.yaml@test/m8flow-nextgen
     with:
       environment: ${{ inputs.environment }}
       image_uri: ${{ inputs.image_uri }}
@@ -520,7 +520,7 @@ jobs:
       always() &&
       needs.validate-and-load.result == 'success' &&
       needs.validate-and-load.outputs.deployment_target == 'ec2'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/deploy-ec2.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/deploy-ec2.yaml@test/m8flow-nextgen
     secrets:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
       REGISTRY_USERNAME: ${{ secrets.NEXUS_USERNAME }}
@@ -548,7 +548,7 @@ jobs:
       always() &&
       needs.validate-and-load.result == 'success' &&
       needs.validate-and-load.outputs.deployment_target == 'ecs'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/deploy-ecs.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/deploy-ecs.yaml@test/m8flow-nextgen
     with:
       environment: ${{ inputs.environment }}
       image_uri: ${{ inputs.image_uri }}
@@ -568,7 +568,7 @@ jobs:
       always() &&
       needs.validate-and-load.result == 'success' &&
       needs.validate-and-load.outputs.deployment_target == 'k8s'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/deploy-k8s.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/deploy-k8s.yaml@test/m8flow-nextgen
     secrets:
       KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
     with:
@@ -595,7 +595,7 @@ jobs:
       needs.validate-and-load.outputs.health_check_enabled == 'true' &&
       inputs.skip_health_check != true &&
       inputs.dry_run != true
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/health-check.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/health-check.yaml@test/m8flow-nextgen
     with:
       workload_kind: ${{ needs.validate-and-load.outputs.workload_kind }}
       additional_workloads: ${{ needs.validate-and-load.outputs.additional_workloads }}
@@ -642,7 +642,7 @@ jobs:
        needs.deploy-ec2.result == 'failure' ||
        needs.deploy-ecs.result == 'failure' ||
        needs.deploy-k8s.result == 'failure')
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/rollback.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/rollback.yaml@test/m8flow-nextgen
     with:
       environment: ${{ inputs.environment }}
       deployment_target: ${{ needs.validate-and-load.outputs.deployment_target }}
@@ -672,7 +672,7 @@ jobs:
       needs.rollback.outputs.status == 'success' &&
       needs.validate-and-load.outputs.deployment_target == 'ec2' &&
       needs.rollback.outputs.rollback_image_uri != ''
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/deploy-ec2.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/deploy-ec2.yaml@test/m8flow-nextgen
     secrets:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
     with:
@@ -696,7 +696,7 @@ jobs:
   notify-result:
     needs: [validate-and-load, deploy-eks, deploy-eks-patch, deploy-ec2, deploy-ecs, deploy-k8s, health-check, rollback, rollback-ec2-execution]
     if: always() && needs.validate-and-load.outputs.notifications_enabled == 'true'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/notify-google-chat.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/notify-google-chat.yaml@test/m8flow-nextgen
     secrets:
       GOOGLE_CHAT_WEBHOOK: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
     with:

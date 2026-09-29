@@ -198,7 +198,7 @@ jobs:
     if: |
       fromJson(needs.load-config.outputs.config).security.sast.enabled == true &&
       contains(needs.load-config.outputs.sast_tool, 'semgrep')
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/sast-semgrep.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/sast-semgrep.yaml@test/m8flow-nextgen
     with:
       scan_path: ${{ fromJson(needs.load-config.outputs.config).security.sast.scan_path || '.' }}
       exclude_paths: ${{ fromJson(needs.load-config.outputs.config).security.sast.exclude_paths || '' }}
@@ -211,7 +211,7 @@ jobs:
     if: |
       fromJson(needs.load-config.outputs.config).security.sast.enabled == true &&
       contains(needs.load-config.outputs.sast_tool, 'sonarqube')
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/sast-sonarqube.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/sast-sonarqube.yaml@test/m8flow-nextgen
     secrets:
       sonar_token: ${{ secrets.sonar_token }}
     with:
@@ -225,7 +225,7 @@ jobs:
   iac:
     needs: load-config
     if: fromJson(needs.load-config.outputs.config).security.iac.enabled == true
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/iac-scan.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/iac-scan.yaml@test/m8flow-nextgen
     with:
       working_directory: ${{ fromJson(needs.load-config.outputs.config).security.iac.working_directory || '.' }}
       frameworks: ${{ fromJson(needs.load-config.outputs.config).security.iac.frameworks || '' }}
@@ -244,7 +244,7 @@ jobs:
       fromJson(needs.load-config.outputs.config).build.enabled != false &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/node-build.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/node-build.yaml@test/m8flow-nextgen
     secrets:
       NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
       NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
@@ -274,7 +274,7 @@ jobs:
       fromJson(needs.load-config.outputs.config).build.enabled != false &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/python-build.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/python-build.yaml@test/m8flow-nextgen
     secrets:
       NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
       NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
@@ -303,7 +303,7 @@ jobs:
       fromJson(needs.load-config.outputs.config).build.enabled != false &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/maven-build.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/maven-build.yaml@test/m8flow-nextgen
     secrets:
       NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
       NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
@@ -335,7 +335,7 @@ jobs:
       !contains(needs.*.result, 'failure') && 
       !contains(needs.*.result, 'cancelled')
     
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/docker-build.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/docker-build.yaml@test/m8flow-nextgen
     secrets:
       registry_username: ${{ secrets.registry_username }}
       registry_password: ${{ secrets.registry_password }}
@@ -386,7 +386,7 @@ jobs:
       always() &&
       fromJson(needs.load-config.outputs.config).security.trivy.enabled == true &&
       needs.docker.result == 'success'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/trivy-scan.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/trivy-scan.yaml@test/m8flow-nextgen
     secrets:
       # Generic-registry credentials first, Nexus as the fallback: these modules
       # expose a single credential pair, so it must match whichever registry the
@@ -422,7 +422,7 @@ jobs:
       needs.docker.result == 'success' &&
       inputs.push == true &&
       (needs.trivy.result == 'success' || needs.trivy.result == 'skipped')
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/sbom-generate.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/sbom-generate.yaml@test/m8flow-nextgen
     secrets:
       # Generic-registry credentials first, Nexus as the fallback: these modules
       # expose a single credential pair, so it must match whichever registry the
@@ -452,7 +452,7 @@ jobs:
       always() &&
       fromJson(needs.load-config.outputs.config).security.sbom_scan.enabled == true &&
       needs.sbom.result == 'success'
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/sbom-scan.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/sbom-scan.yaml@test/m8flow-nextgen
     with:
       sbom_artifact_name: ${{ needs.sbom.outputs.sbom_artifact_name }}
       severity_threshold: ${{ fromJson(needs.load-config.outputs.config).security.sbom_scan.severity || 'medium' }}
@@ -472,7 +472,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: AOT-Technologies/devx-reusable-workflows/.github/workflows/auto-merge.yaml@v1
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/auto-merge.yaml@test/m8flow-nextgen
     secrets:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
