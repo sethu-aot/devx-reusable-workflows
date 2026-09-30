@@ -477,10 +477,20 @@ jobs:
           fi
           
           if [[ -n "$COMBINED_ARGS" ]]; then
-            # Convert multiline string to comma-separated for build-push-action
-            ARGS=$(echo "$COMBINED_ARGS" | tr '\n' ',' | sed 's/,$//')
-            echo "args=$ARGS" >> $GITHUB_OUTPUT
-            echo "📋 Combined Build Args: $ARGS"
+            # build-push-action takes build-args one per line and does NOT
+            # split on commas, so keep the newlines (as a multiline output)
+            # and drop blank lines. Joining them with commas merged every arg
+            # into the first one, and a YAML block scalar's trailing newline
+            # left a trailing comma in its value (VITE_BACKEND_BASE_URL=/api,).
+            ARGS=$(printf '%s\n' "$COMBINED_ARGS" | sed '/^[[:space:]]*$/d')
+            DELIM="EOF_BUILD_ARGS_$(date +%s%N)"
+            {
+              echo "args<<${DELIM}"
+              printf '%s\n' "$ARGS"
+              echo "${DELIM}"
+            } >> "$GITHUB_OUTPUT"
+            echo "📋 Build args:"
+            printf '  %s\n' "$ARGS"
           else
             echo "args=" >> $GITHUB_OUTPUT
           fi
