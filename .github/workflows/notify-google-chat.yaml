@@ -59,17 +59,24 @@ jobs:
     timeout-minutes: 5
 
     steps:
+      # `exit 0` ends this step only, so the later steps must check the
+      # output: without it, a caller with no webhook (a fork, say) still ran
+      # curl against an empty URL and failed the job with exit code 3.
       - name: Validate Webhook
+        id: validate
         env:
           WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
         run: |
           if [[ -z "$WEBHOOK_URL" ]]; then
             echo "::warning::GOOGLE_CHAT_WEBHOOK secret not configured. Skipping notification."
-            exit 0
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Prepare Notification
         id: prepare
+        if: steps.validate.outputs.configured == 'true'
         env:
           STATUS: ${{ inputs.status }}
           ENVIRONMENT: ${{ inputs.environment }}
@@ -132,6 +139,7 @@ jobs:
           echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
       - name: Send Google Chat Notification
+        if: steps.validate.outputs.configured == 'true'
         env:
           WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
           STATUS_EMOJI: ${{ steps.prepare.outputs.emoji }}
@@ -204,6 +212,7 @@ jobs:
           fi
 
       - name: Generate Summary
+        if: steps.validate.outputs.configured == 'true'
         env:
           STATUS: ${{ inputs.status }}
           ENVIRONMENT: ${{ inputs.environment }}
