@@ -128,7 +128,7 @@ jobs:
     timeout-minutes: 15
     # Report-only (no fail_on) never fails the pipeline, as before. With a gate
     # set, a blocking finding or a failed scan must.
-    continue-on-error: ${{ inputs.fail_on == '' }}
+    continue-on-error: ${{ inputs.fail_on == '' || inputs.fail_on == 'none' }}
 
     outputs:
       report_name: ${{ steps.set_output.outputs.report_name }}
@@ -284,7 +284,7 @@ jobs:
         with:
           name: sbom-scan-report${{ steps.names.outputs.suffix }}-${{ github.sha }}
           path: grype-results.*
-          retention-days: 180
+          retention-days: 90
 
       - name: Set Output
         id: set_output

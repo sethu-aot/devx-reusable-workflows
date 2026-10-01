@@ -92,8 +92,15 @@ def main() -> int:
     path = os.environ["SARIF_FILE"]
     tool = os.environ.get("TOOL") or "Scan"
     component = os.environ.get("COMPONENT") or ""
-    fail_on = {s.strip().lower() for s in (os.environ.get("FAIL_ON") or "").split(",") if s.strip()}
     title = f"{tool}: {component}" if component else tool
+    # "none" (or empty) reports only. Unknown names are ignored, loudly.
+    requested = {s.strip().lower() for s in (os.environ.get("FAIL_ON") or "").split(",") if s.strip()}
+    requested.discard("none")
+    unknown = requested - set(ORDER)
+    if unknown:
+        print(f"::warning::{title}: ignoring unknown fail_on severities: {', '.join(sorted(unknown))} "
+              f"(use {', '.join(ORDER)} or none).")
+    fail_on = requested & set(ORDER)
 
     if not os.path.isfile(path) or os.path.getsize(path) == 0:
         print(f"::error::{title}: no report at {path}; the scan did not complete.")
