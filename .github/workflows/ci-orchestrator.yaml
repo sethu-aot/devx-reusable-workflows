@@ -8,9 +8,13 @@ name: "Orchestrator: CI Pipeline"
 # 4. Downloads artifacts from Nexus (if needed)
 # 5. Builds Docker images
 # 6. Sequential Post-Build Security: Trivy → SBOM → SBOM-Scan
-#    Trivy runs on both paths: a pushed image is pulled from the registry, and
-#    a build-only image is loaded from the tarball docker-build exports.
-#    SBOM/SBOM-scan remain push-only -- they describe a published artifact.
+#    All three run on both paths: a pushed image is pulled from the registry,
+#    and a build-only image comes from the tarball docker-build exports.
+#    Each reports every finding by severity in the run summary; security.gate
+#    .fail_on decides which severities fail the build (empty: each scanner's
+#    own default; "none": report only).
+# 7. Notifies the result (notifications.enabled): pass, pass with findings or
+#    fail, the image, and each scanner's counts.
 # ------------------------------------------------------------------------------
 
 on:
@@ -51,6 +55,8 @@ on:
       registry_password:
         required: false
       sonar_token:
+        required: false
+      GOOGLE_CHAT_WEBHOOK:
         required: false
       # Sonatype Nexus
       NEXUS_USERNAME:
@@ -96,6 +102,9 @@ jobs:
       language: ${{ steps.extract.outputs.language }}
       sast_tool: ${{ steps.extract.outputs.sast_tool }}
       artifact_name: ${{ steps.extract.outputs.artifact_name }}
+      component: ${{ steps.extract.outputs.component }}
+      fail_on: ${{ steps.extract.outputs.fail_on }}
+      notify: ${{ steps.extract.outputs.notify }}
 
     
     steps:
@@ -188,6 +197,23 @@ jobs:
           fi
           echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
 
+          # Component label for reports, artifacts and notifications.
+          COMPONENT=$(yq '.project.name // .docker.image_name // ""' "${CONFIG_PATH}")
+          COMPONENT="${COMPONENT##*/}"
+          [[ "$COMPONENT" == "null" ]] && COMPONENT=""
+          echo "component=$COMPONENT" >> $GITHUB_OUTPUT
+
+          # Security gate for every scanner: severities that fail the build.
+          FAIL_ON=$(yq '.security.gate.fail_on // ""' "${CONFIG_PATH}")
+          [[ "$FAIL_ON" == "null" ]] && FAIL_ON=""
+          echo "fail_on=$FAIL_ON" >> $GITHUB_OUTPUT
+          echo "🛡️ Security gate: ${FAIL_ON:-scanner defaults}"
+
+          # Notifications are opt-in here, so existing callers without a webhook
+          # are unaffected; once on, a missing webhook fails the run.
+          NOTIFY=$(yq '.notifications.enabled // false' "${CONFIG_PATH}")
+          echo "notify=$NOTIFY" >> $GITHUB_OUTPUT
+
   # ---------------------------------------------------------------------------
   # 2. PRE-BUILD SECURITY GATES (Parallel) - MULTI-SAST SUPPORT
   # ---------------------------------------------------------------------------
@@ -204,6 +230,8 @@ jobs:
       exclude_paths: ${{ fromJson(needs.load-config.outputs.config).security.sast.exclude_paths || '' }}
       severity_threshold: ${{ fromJson(needs.load-config.outputs.config).security.sast.severity || 'ERROR' }}
       fail_on_findings: ${{ fromJson(needs.load-config.outputs.config).security.sast.fail_on_findings != false }}
+      component: ${{ needs.load-config.outputs.component }}
+      fail_on: ${{ needs.load-config.outputs.fail_on }}
 
   # Option B: SonarQube
   sast-sonarqube:
@@ -353,7 +381,7 @@ jobs:
       backup_existing_tag: ${{ fromJson(needs.load-config.outputs.config).docker.backup_existing_tag == true }}
       # On a build-only run the image never reaches a registry, so export it as
       # a tarball for the container scanners to load.
-      export_image_artifact: ${{ inputs.push != true && fromJson(needs.load-config.outputs.config).security.trivy.enabled == true }}
+      export_image_artifact: ${{ inputs.push != true && (fromJson(needs.load-config.outputs.config).security.trivy.enabled == true || fromJson(needs.load-config.outputs.config).security.sbom.enabled == true) }}
       artifact_name: ${{ needs.load-config.outputs.artifact_name }}
       # AWS Context for ECR
       aws_region: ${{ fromJson(needs.load-config.outputs.config).aws.region || 'us-east-1' }}
@@ -414,15 +442,17 @@ jobs:
       ignore_unfixed: ${{ fromJson(needs.load-config.outputs.config).security.trivy.ignore_unfixed != false }}
       scanners: ${{ fromJson(needs.load-config.outputs.config).security.trivy.scanners || 'vuln,secret,misconfig' }}
       output_format: sarif
+      component: ${{ needs.load-config.outputs.component }}
+      fail_on: ${{ needs.load-config.outputs.fail_on }}
 
-  # STEP 2: SBOM Generation (Only if Trivy passes or is skipped)
+  # STEP 2: SBOM Generation (Only if Trivy passes or is skipped). From the
+  # registry when pushed, from docker-build's tarball otherwise.
   sbom:
     needs: [load-config, docker, trivy]
     if: |
       always() &&
       fromJson(needs.load-config.outputs.config).security.sbom.enabled == true &&
       needs.docker.result == 'success' &&
-      inputs.push == true &&
       (needs.trivy.result == 'success' || needs.trivy.result == 'skipped')
     uses: sethu-aot/devx-reusable-workflows/.github/workflows/sbom-generate.yaml@test/m8flow-nextgen
     secrets:
@@ -446,6 +476,8 @@ jobs:
       # SBOM configuration
       format: ${{ fromJson(needs.load-config.outputs.config).security.sbom.format || 'cyclonedx-json' }}
       upload_artifact: true
+      component: ${{ needs.load-config.outputs.component }}
+      image_artifact: ${{ needs.docker.outputs.image_artifact }}
 
   # STEP 3: SBOM CVE Scan (Dependency-level vulnerabilities)
   sbom-scan:
@@ -459,6 +491,8 @@ jobs:
       sbom_artifact_name: ${{ needs.sbom.outputs.sbom_artifact_name }}
       severity_threshold: ${{ fromJson(needs.load-config.outputs.config).security.sbom_scan.severity || 'medium' }}
       output_format: ${{ fromJson(needs.load-config.outputs.config).security.sbom_scan.format || 'sarif' }}
+      component: ${{ needs.load-config.outputs.component }}
+      fail_on: ${{ needs.load-config.outputs.fail_on }}
 
   # ---------------------------------------------------------------------------
   # 6.5 AUTO-MERGE (Optional for PRs)
@@ -486,7 +520,12 @@ jobs:
     needs: [load-config, sast-semgrep, sast-sonarqube, iac, build-node, build-python, build-maven, docker, trivy, sbom, sbom-scan, auto-merge]
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    
+    outputs:
+      status: ${{ steps.result.outputs.status }}
+      title: ${{ steps.result.outputs.title }}
+      details: ${{ steps.result.outputs.details }}
+      message: ${{ steps.result.outputs.message }}
+
     steps:
       - name: Generate Pipeline Summary
         env:
@@ -578,6 +617,94 @@ jobs:
             echo "Image URI: \`${NEED_DOCKER_IMAGE_URI}\`" >> $GITHUB_STEP_SUMMARY
           fi
 
+      # Findings overview and the notification's content.
+      - name: Findings and Result
+        id: result
+        env:
+          COMPONENT: ${{ needs.load-config.outputs.component }}
+          FAIL_ON: ${{ needs.load-config.outputs.fail_on }}
+          PUSHED: ${{ inputs.push }}
+          IMAGE_URI: ${{ needs.docker.outputs.image_uri }}
+          ANY_FAILURE: ${{ contains(needs.*.result, 'failure') }}
+          ANY_CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}
+          R_SEMGREP: ${{ needs.sast-semgrep.result }}
+          R_SONAR: ${{ needs.sast-sonarqube.result }}
+          R_IAC: ${{ needs.iac.result }}
+          R_BUILD_NODE: ${{ needs.build-node.result }}
+          R_BUILD_PYTHON: ${{ needs.build-python.result }}
+          R_BUILD_MAVEN: ${{ needs.build-maven.result }}
+          R_DOCKER: ${{ needs.docker.result }}
+          R_TRIVY: ${{ needs.trivy.result }}
+          R_SBOM: ${{ needs.sbom.result }}
+          R_SBOM_SCAN: ${{ needs.sbom-scan.result }}
+          TRIVY: ${{ needs.trivy.outputs.critical }}|${{ needs.trivy.outputs.high }}|${{ needs.trivy.outputs.medium }}|${{ needs.trivy.outputs.low }}|${{ needs.trivy.outputs.gate }}
+          SEMGREP: ${{ needs.sast-semgrep.outputs.critical }}|${{ needs.sast-semgrep.outputs.high }}|${{ needs.sast-semgrep.outputs.medium }}|${{ needs.sast-semgrep.outputs.low }}|${{ needs.sast-semgrep.outputs.gate }}
+          GRYPE: ${{ needs.sbom-scan.outputs.critical }}|${{ needs.sbom-scan.outputs.high }}|${{ needs.sbom-scan.outputs.medium }}|${{ needs.sbom-scan.outputs.low }}|${{ needs.sbom-scan.outputs.gate }}
+        run: |
+          {
+            echo "### 🛡️ Security findings"
+            echo ""
+            echo "| Scanner | Critical | High | Medium | Low | Result |"
+            echo "|---|---:|---:|---:|---:|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          DETAILS=""
+          WARN=false
+          BLOCKED=""
+          for entry in "Trivy (image)|$TRIVY" "Semgrep|$SEMGREP" "Grype (SBOM)|$GRYPE"; do
+            IFS='|' read -r NAME C H M L GATE <<<"$entry"
+            [[ -z "$GATE" ]] && continue
+            echo "| ${NAME} | ${C} | ${H} | ${M} | ${L} | ${GATE} |" >> "$GITHUB_STEP_SUMMARY"
+            DETAILS+="${NAME}: ${C} critical, ${H} high, ${M} medium, ${L} low"$'\n'
+            [[ "$GATE" == "warn" ]] && WARN=true
+            [[ "$GATE" == "fail" ]] && BLOCKED+="${NAME}, "
+          done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          FAILED=""
+          for pair in "SAST (Semgrep)=$R_SEMGREP" "SAST (SonarQube)=$R_SONAR" "IaC scan=$R_IAC" \
+                      "Build (node)=$R_BUILD_NODE" "Build (python)=$R_BUILD_PYTHON" "Build (maven)=$R_BUILD_MAVEN" \
+                      "Docker build=$R_DOCKER" "Trivy=$R_TRIVY" "SBOM=$R_SBOM" "SBOM scan=$R_SBOM_SCAN"; do
+            [[ "${pair#*=}" == "failure" ]] && FAILED+="${pair%%=*}, "
+          done
+          FAILED="${FAILED%, }"
+          BLOCKED="${BLOCKED%, }"
+
+          if [[ "$R_DOCKER" == "success" && -n "$IMAGE_URI" ]]; then
+            if [[ "$PUSHED" == "true" ]]; then
+              DETAILS="Image: ${IMAGE_URI} (published)"$'\n'"${DETAILS}"
+            else
+              DETAILS="Image: built, not published"$'\n'"${DETAILS}"
+            fi
+          fi
+
+          GATE_TEXT="${FAIL_ON:-scanner defaults}"
+          [[ "$FAIL_ON" == "none" ]] && GATE_TEXT="report only (nothing blocks yet)"
+          if [[ "$ANY_FAILURE" == "true" ]]; then
+            STATUS=failure; TITLE="CI failed"
+            MESSAGE="Failed: ${FAILED:-see the run}."
+            [[ -n "$BLOCKED" ]] && MESSAGE+=" Blocked by findings in ${BLOCKED} (gate: ${GATE_TEXT})."
+          elif [[ "$ANY_CANCELLED" == "true" ]]; then
+            STATUS=warning; TITLE="CI cancelled"; MESSAGE="The run was cancelled, usually by a newer push."
+          elif [[ "$WARN" == "true" ]]; then
+            STATUS=warning; TITLE="CI passed with findings"
+            MESSAGE="Security gate: ${GATE_TEXT}. The counts above are in the run summary, with the critical and high findings listed."
+          else
+            STATUS=success; TITLE="CI passed"; MESSAGE=""
+          fi
+          if [[ "$PUSHED" == "true" && "$R_DOCKER" == "success" && "$STATUS" != "failure" ]]; then
+            TITLE="${TITLE}, image published"
+          fi
+          TITLE="${TITLE}: ${COMPONENT:-build}"
+
+          {
+            echo "status=$STATUS"
+            echo "title=$TITLE"
+            echo "message=$MESSAGE"
+            echo "details<<EOF_DETAILS"
+            printf '%s' "$DETAILS"
+            echo "EOF_DETAILS"
+          } >> "$GITHUB_OUTPUT"
+
       # Set final job status
       - name: Evaluate Final Status
         env:
@@ -587,3 +714,19 @@ jobs:
             echo "::error::Pipeline failed - one or more stages reported failure"
             exit 1
           fi
+
+  # ---------------------------------------------------------------------------
+  # 8. NOTIFY (notifications.enabled)
+  # ---------------------------------------------------------------------------
+  notify:
+    needs: [load-config, docker, summary]
+    if: always() && needs.load-config.outputs.notify == 'true'
+    uses: sethu-aot/devx-reusable-workflows/.github/workflows/notify-google-chat.yaml@test/m8flow-nextgen
+    secrets:
+      GOOGLE_CHAT_WEBHOOK: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
+    with:
+      status: ${{ needs.summary.outputs.status || 'failure' }}
+      title: ${{ needs.summary.outputs.title || 'CI failed before the summary' }}
+      component: ${{ needs.load-config.outputs.component }}
+      details: ${{ needs.summary.outputs.details }}
+      message: ${{ needs.summary.outputs.message }}
