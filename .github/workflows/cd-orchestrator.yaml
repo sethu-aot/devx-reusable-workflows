@@ -459,6 +459,10 @@ jobs:
       status: starting
       environment: ${{ inputs.environment }}
       image_uri: ${{ inputs.image_uri }}
+      component: ${{ needs.validate-and-load.outputs.deployment_name || needs.validate-and-load.outputs.helm_release_name }}
+      details: |
+        Target: ${{ needs.validate-and-load.outputs.cluster_name }} / ${{ needs.validate-and-load.outputs.namespace }}
+        Method: ${{ needs.validate-and-load.outputs.deployment_target }} (${{ needs.validate-and-load.outputs.deployment_method }})${{ inputs.dry_run && ', dry run' || '' }}
 
   # ---------------------------------------------------------------------------
   # 3. DEPLOYMENT (Routed to Target-Specific Module)
@@ -703,6 +707,18 @@ jobs:
       status: ${{ (needs.health-check.result == 'success' || (needs.health-check.result == 'skipped' && (needs.deploy-eks.result == 'success' || needs.deploy-eks-patch.result == 'success' || needs.deploy-ec2.result == 'success' || needs.deploy-ecs.result == 'success' || needs.deploy-k8s.result == 'success'))) && 'success' || (needs.rollback.result == 'success' && 'rollback' || 'failure') }}
       environment: ${{ inputs.environment }}
       image_uri: ${{ inputs.image_uri }}
+      component: ${{ needs.validate-and-load.outputs.deployment_name || needs.validate-and-load.outputs.helm_release_name }}
+      details: |
+        Target: ${{ needs.validate-and-load.outputs.cluster_name }} / ${{ needs.validate-and-load.outputs.namespace }}
+        Deploy: ${{ needs.deploy-eks-patch.result != 'skipped' && needs.deploy-eks-patch.result || needs.deploy-eks.result != 'skipped' && needs.deploy-eks.result || needs.deploy-k8s.result != 'skipped' && needs.deploy-k8s.result || needs.deploy-ecs.result != 'skipped' && needs.deploy-ecs.result || needs.deploy-ec2.result }}${{ inputs.dry_run && ' (dry run)' || '' }}
+        Health check: ${{ needs.health-check.result }}
+        Rollback: ${{ needs.rollback.result }}
+        Previous image: ${{ needs.deploy-eks-patch.outputs.previous_images }}
+      message: >-
+        ${{ needs.rollback.result == 'success' && 'The new image failed, so the workload was rolled back to the image it ran before this deploy.'
+          || needs.rollback.result == 'failure' && 'The deploy failed AND the rollback failed: the workload needs attention now.'
+          || (needs.health-check.result == 'failure' || needs.deploy-eks-patch.result == 'failure' || needs.deploy-eks.result == 'failure' || needs.deploy-k8s.result == 'failure') && 'The deploy failed and automatic rollback is off for this environment.'
+          || '' }}
 
   # ---------------------------------------------------------------------------
   # 7. PIPELINE SUMMARY
