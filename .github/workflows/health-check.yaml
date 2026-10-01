@@ -379,20 +379,14 @@ jobs:
               echo "Health check passed (HTTP $HTTP_STATUS)"
               echo "status=healthy" >> $GITHUB_OUTPUT
               
-              # Pretty-print JSON if jq is available
-              if echo "$BODY" | jq . > /dev/null 2>&1; then
-                PRETTY_BODY=$(echo "$BODY" | jq .)
-                echo "Response Body:"
-                echo "$PRETTY_BODY"
-                echo "details<<EOF" >> $GITHUB_OUTPUT
-                echo "HTTP 200 OK from $URL. Body: $BODY" >> $GITHUB_OUTPUT
-                echo "EOF" >> $GITHUB_OUTPUT
-              else
-                echo "Response Body: $BODY"
-                echo "details<<EOF" >> $GITHUB_OUTPUT
-                echo "HTTP 200 OK from $URL. Body: $BODY" >> $GITHUB_OUTPUT
-                echo "EOF" >> $GITHUB_OUTPUT
-              fi
+              # A preview only: a full body (an OIDC discovery document, an
+              # HTML page) buries the result in the log and the summary.
+              PREVIEW=$(echo "$BODY" | tr -s '[:space:]' ' ' | cut -c1-200)
+              [[ ${#BODY} -gt 200 ]] && PREVIEW="${PREVIEW}…"
+              echo "Response (first 200 chars): $PREVIEW"
+              echo "details<<EOF" >> $GITHUB_OUTPUT
+              echo "HTTP 200 OK from $URL. Body: $PREVIEW" >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
               exit 0
             fi
             
