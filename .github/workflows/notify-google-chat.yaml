@@ -82,16 +82,34 @@ jobs:
     timeout-minutes: 5
 
     steps:
+      # A pull request from a fork never gets secrets, whatever the repository
+      # holds, so a missing webhook there is expected: warn and carry on (the
+      # merge's push run notifies). Anywhere else a missing webhook is a
+      # misconfiguration and fails the job.
       - name: Require Webhook
+        id: webhook
         env:
           WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
+          EVENT: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
         run: |
-          if [[ -z "$WEBHOOK_URL" ]]; then
-            echo "::error::GOOGLE_CHAT_WEBHOOK is not set, so this notification cannot be sent. Add the secret to the repository (or organization), or turn notifications off in the DevX config (notifications.enabled: false)."
-            exit 1
+          if [[ -n "$WEBHOOK_URL" ]]; then
+            echo "send=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          # Only `pull_request`: `pull_request_target` runs do get secrets.
+          if [[ "$EVENT" == "pull_request" && -n "$HEAD_REPO" && "$HEAD_REPO" != "$REPO" ]]; then
+            echo "::warning::No GOOGLE_CHAT_WEBHOOK on a pull request from a fork (${HEAD_REPO}): GitHub withholds secrets there, so no notification is sent. The push run after the merge notifies."
+            echo "### 🔕 Notification not sent: pull request from a fork (no secrets)" >> "$GITHUB_STEP_SUMMARY"
+            echo "send=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::error::GOOGLE_CHAT_WEBHOOK is not set, so this notification cannot be sent. Add the secret to the repository (or organization), or turn notifications off in the DevX config (notifications.enabled: false)."
+          exit 1
 
       - name: Send Google Chat Notification
+        if: steps.webhook.outputs.send == 'true'
         env:
           WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
           STATUS: ${{ inputs.status }}
