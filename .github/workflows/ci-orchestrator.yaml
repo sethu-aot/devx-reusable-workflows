@@ -228,6 +228,7 @@ jobs:
     with:
       scan_path: ${{ fromJson(needs.load-config.outputs.config).security.sast.scan_path || '.' }}
       exclude_paths: ${{ fromJson(needs.load-config.outputs.config).security.sast.exclude_paths || '' }}
+      ruleset: ${{ fromJson(needs.load-config.outputs.config).security.sast.ruleset || 'p/ci' }}
       severity_threshold: ${{ fromJson(needs.load-config.outputs.config).security.sast.severity || 'ERROR' }}
       fail_on_findings: ${{ fromJson(needs.load-config.outputs.config).security.sast.fail_on_findings != false }}
       component: ${{ needs.load-config.outputs.component }}

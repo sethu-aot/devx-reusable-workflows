@@ -30,7 +30,7 @@ on:
         type: string
         default: ""
       ruleset:
-        description: "Semgrep ruleset (p/ci, p/default, p/owasp-top-ten)"
+        description: "Semgrep ruleset(s), comma-separated (p/ci, p/default, p/python, p/secrets, ...)"
         type: string
         default: "p/ci"
       severity_threshold:
@@ -179,8 +179,15 @@ jobs:
           fi
           # Semgrep's own exit code is not the gate (the Findings step is), so
           # only a missing report counts as a failed scan.
+          # One --config per comma-separated ruleset (e.g. "p/default,p/python").
+          CONFIG_FLAGS=()
+          IFS=',' read -ra RULESETS <<< "${RULESET}"
+          for r in "${RULESETS[@]}"; do
+            r=$(echo "$r" | xargs)
+            [ -n "$r" ] && CONFIG_FLAGS+=(--config "$r")
+          done
           semgrep scan \
-            --config="${RULESET}" \
+            "${CONFIG_FLAGS[@]}" \
             $EXCLUDE_FLAGS \
             --sarif \
             --output=semgrep.sarif \
