@@ -1,0 +1,53 @@
+name: "DevX: Scan Findings"
+description: >-
+  Counts a SARIF report's findings by severity, writes them to the run summary
+  and gates on the severities listed in fail_on (empty = report only).
+
+inputs:
+  sarif_file:
+    description: "SARIF report to summarize"
+    required: true
+  tool:
+    description: "Scanner name shown in the summary (Trivy, Semgrep, Grype)"
+    required: true
+  component:
+    description: "Component the report is for (shown in the summary)"
+    required: false
+    default: ""
+  fail_on:
+    description: "Comma-separated severities that fail the step (critical,high,medium,low). Empty reports only."
+    required: false
+    default: ""
+
+outputs:
+  critical:
+    description: "Critical findings"
+    value: ${{ steps.summarize.outputs.critical }}
+  high:
+    description: "High findings"
+    value: ${{ steps.summarize.outputs.high }}
+  medium:
+    description: "Medium findings"
+    value: ${{ steps.summarize.outputs.medium }}
+  low:
+    description: "Low findings"
+    value: ${{ steps.summarize.outputs.low }}
+  total:
+    description: "All findings"
+    value: ${{ steps.summarize.outputs.total }}
+  status:
+    description: "clean, warn, fail, or error (no usable report)"
+    value: ${{ steps.summarize.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - name: Summarize findings
+      id: summarize
+      shell: bash
+      env:
+        SARIF_FILE: ${{ inputs.sarif_file }}
+        TOOL: ${{ inputs.tool }}
+        COMPONENT: ${{ inputs.component }}
+        FAIL_ON: ${{ inputs.fail_on }}
+      run: python3 "${GITHUB_ACTION_PATH}/summarize.py"

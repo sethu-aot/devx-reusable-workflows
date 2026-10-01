@@ -48,10 +48,36 @@ on:
         type: boolean
         default: true
 
+      component:
+        description: "Component the SBOM is for; keeps its code-scanning category and report separate"
+        type: string
+        default: ""
+      fail_on:
+        description: |
+          Severities that fail the scan (critical,high,medium,low). Empty reports
+          only, as before: the job then never fails the pipeline.
+        type: string
+        default: ""
+
     outputs:
       scan_report_artifact:
         description: "Name of the uploaded scan report artifact"
         value: ${{ jobs.sbom-scan.outputs.report_name }}
+      critical:
+        description: "Critical findings"
+        value: ${{ jobs.sbom-scan.outputs.critical }}
+      high:
+        description: "High findings"
+        value: ${{ jobs.sbom-scan.outputs.high }}
+      medium:
+        description: "Medium findings"
+        value: ${{ jobs.sbom-scan.outputs.medium }}
+      low:
+        description: "Low findings"
+        value: ${{ jobs.sbom-scan.outputs.low }}
+      gate:
+        description: "clean, warn or fail"
+        value: ${{ jobs.sbom-scan.outputs.gate }}
 
   # Allow manual trigger for testing
   workflow_dispatch:
@@ -100,14 +126,29 @@ jobs:
   sbom-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
+    # Report-only (no fail_on) never fails the pipeline, as before. With a gate
+    # set, a blocking finding or a failed scan must.
+    continue-on-error: ${{ inputs.fail_on == '' }}
 
     outputs:
       report_name: ${{ steps.set_output.outputs.report_name }}
+      critical: ${{ steps.findings.outputs.critical }}
+      high: ${{ steps.findings.outputs.high }}
+      medium: ${{ steps.findings.outputs.medium }}
+      low: ${{ steps.findings.outputs.low }}
+      gate: ${{ steps.findings.outputs.status }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Name Outputs
+        id: names
+        env:
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          SUFFIX=$(echo "${COMPONENT}" | tr -c 'A-Za-z0-9._-' '-' | sed 's/-*$//')
+          echo "suffix=${SUFFIX:+-${SUFFIX}}" >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------------------
       # ARTIFACT RETRIEVAL
@@ -199,7 +240,6 @@ jobs:
           # checking whether a usable report was actually produced.
           set +e
           grype "sbom:${SBOM_FILE}" \
-            --fail-on "${SEVERITY_THRESHOLD}" \
             --output "${OUTPUT_FORMAT}" \
             --file "$REPORT"
           GRYPE_EXIT=$?
@@ -220,11 +260,7 @@ jobs:
           fi
 
           echo "report_valid=true" >> "$GITHUB_OUTPUT"
-          if [[ $GRYPE_EXIT -ne 0 ]]; then
-            echo "::warning::Vulnerabilities at or above '${SEVERITY_THRESHOLD}' were found. See the Security tab."
-          else
-            echo "✅ No vulnerabilities at or above '${SEVERITY_THRESHOLD}'."
-          fi
+          echo "Grype finished (exit ${GRYPE_EXIT}); the Findings step reports and gates."
 
       # ------------------------------------------------------------------------
       # REPORTING
@@ -240,13 +276,13 @@ jobs:
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           sarif_file: grype-results.sarif
-          category: sbom-grype
+          category: sbom-grype${{ steps.names.outputs.suffix }}
 
       - name: Upload Scan Report Artifact
         if: inputs.upload_artifact == true && always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sbom-scan-report-${{ github.sha }}
+          name: sbom-scan-report${{ steps.names.outputs.suffix }}-${{ github.sha }}
           path: grype-results.*
           retention-days: 180
 
@@ -255,9 +291,20 @@ jobs:
         env:
           UPLOAD_ARTIFACT: ${{ inputs.upload_artifact }}
           GH_SHA: ${{ github.sha }}
+          SUFFIX: ${{ steps.names.outputs.suffix }}
         run: |
           if [[ "${UPLOAD_ARTIFACT}" == "true" ]]; then
-            echo "report_name=sbom-scan-report-${GH_SHA}" >> $GITHUB_OUTPUT
+            echo "report_name=sbom-scan-report${SUFFIX}-${GH_SHA}" >> $GITHUB_OUTPUT
           else
             echo "report_name=" >> $GITHUB_OUTPUT
           fi
+
+      - name: Findings
+        id: findings
+        if: always() && steps.grype.outputs.report_valid == 'true' && inputs.output_format == 'sarif'
+        uses: sethu-aot/devx-reusable-workflows/.github/actions/scan-findings@test/m8flow-nextgen # TEMPORARY: fork DevX
+        with:
+          sarif_file: grype-results.sarif
+          tool: Grype (SBOM)
+          component: ${{ inputs.component || inputs.sbom_artifact_name }}
+          fail_on: ${{ inputs.fail_on }}

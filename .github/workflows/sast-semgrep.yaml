@@ -12,8 +12,10 @@ name: "Module: SAST Scan (Semgrep)"
 # - Code Security must be enabled for this repository to use code scanning (Code Security features are free for public repositories and billed for per 90-day active committer for private and internal repositories)
 #
 # POLICY GATE:
-# - fail_on_findings = true  → pipeline fails on findings
-# - fail_on_findings = false → audit mode (report only)
+# - fail_on (critical,high,medium,low) → fails on those severities; "none"
+#   reports only. Semgrep levels map ERROR → high, WARNING → medium, INFO → low.
+# - fail_on empty → the old switch: fail_on_findings at severity_threshold.
+# Every severity is always reported, so medium and low show up as warnings.
 # ------------------------------------------------------------------------------
 
 on:
@@ -43,7 +45,32 @@ on:
         description: "Upload SARIF to GitHub Security tab"
         type: boolean
         default: true
-  
+      component:
+        description: "Component being scanned; keeps its code-scanning category and report separate"
+        type: string
+        default: ""
+      fail_on:
+        description: 'Severities that fail the gate (critical,high,medium,low); "none" reports only; empty keeps fail_on_findings'
+        type: string
+        default: ""
+
+    outputs:
+      critical:
+        description: "Critical findings"
+        value: ${{ jobs.sast-scan.outputs.critical }}
+      high:
+        description: "High findings"
+        value: ${{ jobs.sast-scan.outputs.high }}
+      medium:
+        description: "Medium findings"
+        value: ${{ jobs.sast-scan.outputs.medium }}
+      low:
+        description: "Low findings"
+        value: ${{ jobs.sast-scan.outputs.low }}
+      gate:
+        description: "clean, warn or fail"
+        value: ${{ jobs.sast-scan.outputs.gate }}
+
   workflow_dispatch:
     inputs:
       scan_path:
@@ -84,6 +111,12 @@ jobs:
   sast-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      critical: ${{ steps.findings.outputs.critical }}
+      high: ${{ steps.findings.outputs.high }}
+      medium: ${{ steps.findings.outputs.medium }}
+      low: ${{ steps.findings.outputs.low }}
+      gate: ${{ steps.findings.outputs.status }}
 
     steps:
       - name: Checkout Code
@@ -102,115 +135,85 @@ jobs:
             exit 1
           }
 
+      - name: Resolve Gate
+        id: gate
+        env:
+          FAIL_ON: ${{ inputs.fail_on }}
+          FAIL_ON_FINDINGS: ${{ inputs.fail_on_findings }}
+          SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          if [[ "${FAIL_ON}" == "none" ]]; then
+            GATE=""
+          elif [[ -n "${FAIL_ON}" ]]; then
+            GATE="${FAIL_ON}"
+          elif [[ "${FAIL_ON_FINDINGS}" == "true" ]]; then
+            case "${SEVERITY_THRESHOLD}" in
+              INFO) GATE="critical,high,medium,low" ;;
+              WARNING) GATE="critical,high,medium" ;;
+              *) GATE="critical,high" ;;
+            esac
+          else
+            GATE=""
+          fi
+          echo "fail_on=${GATE}" >> "$GITHUB_OUTPUT"
+          SUFFIX=$(echo "${COMPONENT}" | tr -c 'A-Za-z0-9._-' '-' | sed 's/-*$//')
+          echo "suffix=${SUFFIX:+-${SUFFIX}}" >> "$GITHUB_OUTPUT"
+
       - name: Run Semgrep SAST
         id: semgrep
         timeout-minutes: 15
         env:
           RULESET: ${{ inputs.ruleset }}
-          SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
           SCAN_PATH: ${{ inputs.scan_path }}
           EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
-          FAIL_ON_FINDINGS: ${{ inputs.fail_on_findings }}
         run: |
-          echo "🔍 Running Semgrep SAST scan..."
-          echo "Config: ${RULESET}"
-          echo "Severity: ${SEVERITY_THRESHOLD}"
-          echo "Scan path: ${SCAN_PATH}"
-          echo "Working directory: $(pwd)"
-          
-          # Build exclude flags
+          echo "Running Semgrep (${RULESET}) on ${SCAN_PATH}, all severities"
           EXCLUDE_FLAGS=""
           if [ -n "${EXCLUDE_PATHS}" ]; then
             IFS=',' read -ra EXCLUDES <<< "${EXCLUDE_PATHS}"
             for exclude in "${EXCLUDES[@]}"; do
               exclude=$(echo "$exclude" | xargs)
-              if [ -n "$exclude" ]; then
-                EXCLUDE_FLAGS="$EXCLUDE_FLAGS --exclude $exclude"
-              fi
+              [ -n "$exclude" ] && EXCLUDE_FLAGS="$EXCLUDE_FLAGS --exclude $exclude"
             done
-            echo "Excluding: ${EXCLUDE_PATHS}"
           fi
-
-          # Map severity threshold
-          SEVERITY_FLAG=""
-          case "${SEVERITY_THRESHOLD}" in
-            ERROR)
-              SEVERITY_FLAG="--severity=ERROR"
-              ;;
-            WARNING)
-              SEVERITY_FLAG="--severity=WARNING --severity=ERROR"
-              ;;
-            INFO)
-              SEVERITY_FLAG="--severity=INFO --severity=WARNING --severity=ERROR"
-              ;;
-          esac
-
-          # Run Semgrep (always generate SARIF, even on error)
-          EXIT_CODE=0
+          # Semgrep's own exit code is not the gate (the Findings step is), so
+          # only a missing report counts as a failed scan.
           semgrep scan \
             --config="${RULESET}" \
-            $SEVERITY_FLAG \
             $EXCLUDE_FLAGS \
             --sarif \
             --output=semgrep.sarif \
-            "${SCAN_PATH}" || EXIT_CODE=$?
-
-          # Verify SARIF was created
-          if [ ! -f "semgrep.sarif" ]; then
-            echo "::warning::SARIF file was not generated by Semgrep, creating empty one..."
-            cat > semgrep.sarif << 'EOF'
-          {
-            "$schema": "https://raw.githubusercontent.com/microsoft/sarif-python-om/refs/heads/main/sarif-schema-2.1.0.json",
-            "version": "2.1.0",
-            "runs": [
-              {
-                "tool": {
-                  "driver": {
-                    "name": "Semgrep",
-                    "informationUri": "https://semgrep.dev",
-                    "semanticVersion": "1.0.0",
-                    "rules": []
-                  }
-                },
-                "results": []
-              }
-            ]
-          }
-          EOF
-          else
-            echo "✅ SARIF file generated: $(ls -lh semgrep.sarif)"
-          fi
-
-          # Console output for visibility
-          echo ""
-          echo "📊 Scan Results:"
-          semgrep scan \
-            --config="${RULESET}" \
-            $SEVERITY_FLAG \
-            $EXCLUDE_FLAGS \
             "${SCAN_PATH}" || true
-
-          # Handle exit code
-          if [ $EXIT_CODE -ne 0 ]; then
-            if [ "${FAIL_ON_FINDINGS}" == "true" ]; then
-              echo "::error::❌ Semgrep found security issues (severity: ${SEVERITY_THRESHOLD})"
-              echo "EXIT_WITH_ERROR=true" >> $GITHUB_ENV
-            else
-              echo "::warning::⚠️ Semgrep found issues but fail_on_findings is false (audit mode)"
-            fi
-          else
-            echo "✅ No security issues found"
+          if [ ! -s semgrep.sarif ]; then
+            echo "::error::Semgrep produced no report; the scan did not complete."
+            exit 1
           fi
 
       - name: Upload SARIF to Security Tab
         if: inputs.upload_sarif == true && always()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           sarif_file: semgrep.sarif
-          category: sast-semgrep
+          category: sast-semgrep${{ steps.gate.outputs.suffix }}
 
-      - name: Fail Job If Needed
-        if: env.EXIT_WITH_ERROR == 'true'
-        run: |
-          echo "::error::Failing job due to security findings"
-          exit 1
+      - name: Upload Report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: semgrep${{ steps.gate.outputs.suffix }}-${{ github.sha }}
+          path: semgrep.sarif
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Findings
+        id: findings
+        if: always() && steps.semgrep.outcome == 'success'
+        uses: sethu-aot/devx-reusable-workflows/.github/actions/scan-findings@test/m8flow-nextgen # TEMPORARY: fork DevX
+        with:
+          sarif_file: semgrep.sarif
+          tool: Semgrep
+          component: ${{ inputs.component || inputs.scan_path }}
+          fail_on: ${{ steps.gate.outputs.fail_on }}

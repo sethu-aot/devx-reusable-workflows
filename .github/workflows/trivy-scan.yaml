@@ -81,6 +81,37 @@ on:
         description: "Output format: 'table' (logs), 'sarif' (security tab), or 'json'"
         type: string
         default: "sarif"
+      component:
+        description: |
+          Component being scanned. Keeps each component's code-scanning category
+          and report artifact separate: without it every component in a repo
+          uploads to one category, and each upload marks the previous one fixed.
+        type: string
+        default: ""
+      fail_on:
+        description: |
+          Comma-separated severities that fail the gate (critical,high,medium,low).
+          "none" reports every finding and never fails. Empty keeps the old
+          behaviour: fail_on_vuln + severity_threshold.
+        type: string
+        default: ""
+
+    outputs:
+      critical:
+        description: "Critical findings"
+        value: ${{ jobs.trivy-security-gate.outputs.critical }}
+      high:
+        description: "High findings"
+        value: ${{ jobs.trivy-security-gate.outputs.high }}
+      medium:
+        description: "Medium findings"
+        value: ${{ jobs.trivy-security-gate.outputs.medium }}
+      low:
+        description: "Low findings"
+        value: ${{ jobs.trivy-security-gate.outputs.low }}
+      gate:
+        description: "clean, warn or fail"
+        value: ${{ jobs.trivy-security-gate.outputs.gate }}
 
     secrets:
       registry_username:
@@ -163,6 +194,12 @@ jobs:
   trivy-security-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      critical: ${{ steps.findings.outputs.critical }}
+      high: ${{ steps.findings.outputs.high }}
+      medium: ${{ steps.findings.outputs.medium }}
+      low: ${{ steps.findings.outputs.low }}
+      gate: ${{ steps.findings.outputs.status }}
 
     steps:
       - name: Checkout Code
@@ -246,6 +283,30 @@ jobs:
           docker pull "${IMAGE_URI}"
           echo "Success: Image pulled successfully"
 
+      # The scanner reports every severity and never fails the job itself; the
+      # findings step below applies the gate. Empty fail_on keeps the old
+      # behaviour (fail_on_vuln on severity_threshold) for existing callers.
+      - name: Resolve Gate
+        id: gate
+        env:
+          FAIL_ON: ${{ inputs.fail_on }}
+          FAIL_ON_VULN: ${{ inputs.fail_on_vuln }}
+          SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          if [[ "${FAIL_ON}" == "none" ]]; then
+            GATE=""
+          elif [[ -n "${FAIL_ON}" ]]; then
+            GATE="${FAIL_ON}"
+          elif [[ "${FAIL_ON_VULN}" == "true" ]]; then
+            GATE=$(echo "${SEVERITY_THRESHOLD}" | tr '[:upper:]' '[:lower:]')
+          else
+            GATE=""
+          fi
+          echo "fail_on=${GATE}" >> "$GITHUB_OUTPUT"
+          SUFFIX=$(echo "${COMPONENT}" | tr -c 'A-Za-z0-9._-' '-' | sed 's/-*$//')
+          echo "suffix=${SUFFIX:+-${SUFFIX}}" >> "$GITHUB_OUTPUT"
+
       # ------------------------------------------------------------------------
       # MODE 1: FILESYSTEM SCAN (Dependencies & IaC)
       # ------------------------------------------------------------------------
@@ -256,11 +317,11 @@ jobs:
           scan-type: 'fs'
           scan-ref: ${{ inputs.scan_path }}
           scanners: ${{ inputs.scanners }}
-          severity: ${{ inputs.severity_threshold }}
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
           ignore-unfixed: ${{ inputs.ignore_unfixed }}
-          format: ${{ inputs.output_format }}
+          format: sarif
           output: 'trivy-${{ inputs.scan_type }}-results.sarif'
-          exit-code: ${{ inputs.fail_on_vuln && '1' || '0' }}
+          exit-code: '0'
 
       # ------------------------------------------------------------------------
       # MODE 2: IMAGE SCAN (Container OS & Packages)
@@ -272,11 +333,11 @@ jobs:
           scan-type: 'image'
           image-ref: ${{ inputs.image_uri }}
           scanners: ${{ inputs.scanners }}
-          severity: ${{ inputs.severity_threshold }}
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
           ignore-unfixed: ${{ inputs.ignore_unfixed }}
-          format: ${{ inputs.output_format }}
+          format: sarif
           output: 'trivy-${{ inputs.scan_type }}-results.sarif'
-          exit-code: ${{ inputs.fail_on_vuln && '1' || '0' }}
+          exit-code: '0'
 
       # ------------------------------------------------------------------------
       # REPORTING (SARIF UPLOAD)
@@ -291,34 +352,27 @@ jobs:
         continue-on-error: true
         with:
           sarif_file: 'trivy-${{ inputs.scan_type }}-results.sarif'
-          category: 'trivy-${{ inputs.scan_type }}'
+          category: 'trivy-${{ inputs.scan_type }}${{ steps.gate.outputs.suffix }}'
 
       # ------------------------------------------------------------------------
-      # SUMMARY
+      # FINDINGS: counts, run summary, gate
       # ------------------------------------------------------------------------
-      - name: Generate Scan Summary
+      - name: Upload Report
         if: always()
-        env:
-          SCAN_TYPE: ${{ inputs.scan_type }}
-          IMAGE_URI: ${{ inputs.image_uri }}
-          SCAN_PATH: ${{ inputs.scan_path }}
-          SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
-          SCANNERS: ${{ inputs.scanners }}
-        run: |
-          echo "##  Trivy Security Scan Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Scan Type:** ${SCAN_TYPE}" >> $GITHUB_STEP_SUMMARY
-          if [[ "${SCAN_TYPE}" == "image" ]]; then
-            echo "- **Image:** \`${IMAGE_URI}\`" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- **Path:** ${SCAN_PATH}" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "- **Severity Filter:** ${SEVERITY_THRESHOLD}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Scanners:** ${SCANNERS}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [[ -f "trivy-${SCAN_TYPE}-results.sarif" ]]; then
-            echo " Scan completed. Results uploaded to Security tab." >> $GITHUB_STEP_SUMMARY
-          else
-            echo "  Scan completed but no SARIF file generated." >> $GITHUB_STEP_SUMMARY
-          fi
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-${{ inputs.scan_type }}${{ steps.gate.outputs.suffix }}-${{ github.sha }}
+          path: trivy-${{ inputs.scan_type }}-results.sarif
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Findings
+        id: findings
+        if: always()
+        uses: sethu-aot/devx-reusable-workflows/.github/actions/scan-findings@test/m8flow-nextgen # TEMPORARY: fork DevX
+        with:
+          sarif_file: trivy-${{ inputs.scan_type }}-results.sarif
+          tool: Trivy (${{ inputs.scan_type }})
+          component: ${{ inputs.component || inputs.image_uri || inputs.scan_path }}
+          fail_on: ${{ steps.gate.outputs.fail_on }}
